@@ -750,25 +750,7 @@ class SidebarButton(QPushButton):
         h_layout.addStretch(1) # Push icon/text to left
 
         self.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                border: none;
-                text-align: left;
-                border-radius: 8px; /* Rounded corners */
-            }
-            QPushButton:hover {
-                background-color: #343a40; /* Darker gray on hover */
-            }
-            QPushButton:pressed {
-                background-color: #2b3035; /* Even darker on press */
-            }
-            QPushButton:checked { /* Style for selected/active button */
-                background-color: #495057; /* Slightly lighter dark for active */
-                border-left: 3px solid #4dabf7; /* Accent border on left */
-            }
-            QPushButton:focus {
-                outline: none; /* Remove dotted outline on focus */
-            }
+        stylesheet goes here
         """)
         self.setCheckable(True) # Make buttons checkable for selection feedback
 
@@ -801,21 +783,7 @@ class SidebarButton(QPushButton):
 
 # Define SVG Icons
 ICONS = {
-    "download": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-download"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>""",
-    "film": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-film"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h18"/><path d="M3 12h18"/><path d="M3 16.5h18"/><path d="M17 3v18"/></svg>""",
-    "headphones": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-headphones"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/></svg>""",
-    "list": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucude-list"><line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/></svg>""",
-    "shuffle": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-shuffle"><path d="M21 16v-4a2 2 0 0 0-2-2H7l-4-4v14l4-4h12a2 2 0 0 0 2-2z"/></svg>""", # Using shuffle for convert
-    "plus": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-plus"><line x1="12" x2="12" y1="5" y2="19"/><line x1="5" x2="19" y1="12" y2="12"/></svg>""",
-    "menu": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-menu"><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></svg>""",
-    "search": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>""",
-    "trash": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>""",
-    "play": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play"><polygon points="5 3 19 12 5 21 5 3"/></svg>""",
-    "folder-open": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-folder-open"><path d="M6 17a3 3 0 0 0 3 3h10a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8a2 2 0 0 1-2-2V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a3 3 0 0 0 3 3Z"/><path d="m10 12 1.293 1.293a1 1 0 0 0 1.414 0L14 12"/></svg>""",
-    "refresh": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-refresh-cw"><path d="M21 12a9 9 0 0 0-9-9c-2.7 0-5.1 1.07-6.9 2.89M3 12a9 9 0 0 0 9 9c2.7 0 5.1-1.07 6.9-2.89M3 2v6h6M21 22v-6h-6"/></svg>""",
-    "x-circle": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x-circle"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>""",
-    "arrow-up": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-up"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>""",
-    "arrow-down": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-down"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>"""
+"""svg icons goes here"""
 }
 
 
@@ -893,8 +861,6 @@ class SearchLineEdit(QLineEdit):
         icon_y = (self.height() - self.search_icon_button.height()) // 2 # Vertically center
         self.search_icon_button.move(icon_x, icon_y)
 
-
-# --- Custom Checkbox (from QCustomCheckBox.py) ---
 # Update the QCustomCheckBox class with the fixed paintEvent method
 class QCustomCheckBox(QCheckBox):
     def __init__(self, text="", parent=None):
@@ -1067,9 +1033,6 @@ class QCustomCheckBox(QCheckBox):
 
         painter.end()
 
-# Re-add QSvgRenderer import if it was removed, as SidebarButton uses it.
-from PySide6.QtSvg import QSvgRenderer 
-
 # New CustomHeaderView class to manage sort indicator as a QLabel
 class CustomHeaderView(QHeaderView):
     def __init__(self, orientation, parent=None):
@@ -1145,9 +1108,6 @@ class CustomHeaderView(QHeaderView):
         super().setModel(model)
         # Re-evaluate sort indicator position when model changes (e.g., when data is filtered)
         self._update_sort_indicator_position()
-
-
-
 
 class DownloadTableModel(QAbstractTableModel):
     def __init__(self, data, is_completed_model=False, parent=None):
@@ -1301,9 +1261,6 @@ class MainWindow(QMainWindow):
         
         self.completed_playlists_data = []
         self.completed_playlists_model = DownloadTableModel(self.completed_playlists_data, is_completed_model=True)
-
-        # Dictionary to store active download processes and their cancellation events
-        # Key: URL, Value: {'process': subprocess.Popen object, 'cancel_event': threading.Event}
         self.active_processes = {} # <--- MODIFIED: Now stores dict with process and event
         
         self.current_panel_type = "active_downloads" # Initialize panel type early
@@ -1484,10 +1441,6 @@ class MainWindow(QMainWindow):
         self.main_content_vlayout.addWidget(self.content_stacked_widget)
         
         main_splitter.addWidget(self.content_container_widget) # Add content area to splitter
-
-        # Set initial sizes for the splitter (sidebar, content)
-        # These weights determine the initial distribution of space.
-        # A ratio of 1:4 (200:800) for a 1000px wide window.
         main_splitter.setSizes([200, 800]) 
 
         # Create and add all panels
@@ -2021,10 +1974,6 @@ class MainWindow(QMainWindow):
         self.active_downloads_table_view.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.active_downloads_table_view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.active_downloads_table_view.setFocusPolicy(Qt.NoFocus)
-
-        # No setItemDelegate needed. CustomHeaderView handles sort indicator with QLabel.
-        # custom_header.setSectionsClickable(True) is handled in CustomHeaderView __init__
-        
         self.active_downloads_table_view.setColumnWidth(0, 300) # Name
         self.active_downloads_table_view.setColumnWidth(1, 150) # Date
         self.active_downloads_table_view.setColumnWidth(2, 100) # Size
@@ -2065,9 +2014,6 @@ class MainWindow(QMainWindow):
         table_view.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         table_view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         table_view.setFocusPolicy(Qt.NoFocus)
-
-        # No setItemDelegate needed. CustomHeaderView handles sort indicator with QLabel.
-        # custom_header.setSectionsClickable(True) is handled in CustomHeaderView __init__
         
         table_view.setColumnWidth(0, 300) # Name
         table_view.setColumnWidth(1, 150) # Date
@@ -2306,17 +2252,14 @@ class MainWindow(QMainWindow):
         global_double_click_action = self.double_click_action_dropdown.currentText()
         self.show_status(f"Double-click action set to: {global_double_click_action}", "info")
 
-
     # --- Panel Update Functions (to refresh content when shown) ---
     def update_active_downloads_display(self):
         """Refreshes the display of active downloads in the GUI."""
         self.filter_displayed_items(self.search_input.text())
 
-
     def update_completed_display(self, file_type):
         """Refreshes the display of completed downloads for a specific type."""
         self.filter_displayed_items(self.search_input.text())
-
 
     def clear_completed_list(self, file_type):
         """Clears the completed downloads list for a specific type"""
@@ -2359,7 +2302,6 @@ class MainWindow(QMainWindow):
             self.show_status(f"Download added: {download_info.get('filename', download_info.get('url'))}", "info")
         QApplication.processEvents()
 
-
     def update_download_status_in_list(self, url, new_data_dict):
         """Updates an existing download entry in the GUI. Does NOT add new entries."""
         # Check if the download already exists by URL in the active_downloads_data (master list)
@@ -2373,20 +2315,8 @@ class MainWindow(QMainWindow):
             # Update existing entry in the master data list
             current_data = self.active_downloads_data[found_index]
             current_data.update(new_data_dict) # Merge new data into existing
-            
-            # Now, update the model. The model might be filtered, so we need to ensure
-            # the update propagates correctly to the currently displayed items.
-            # The DownloadTableModel.updateItem method will handle emitting dataChanged.
             self.active_downloads_model.updateItem(url, new_data_dict)
-            # No 'else' block here. If found_index is -1, it means an update message
-            # was received for an item not yet in the list, which indicates a logic
-            # flow issue where 'add_download' might have been skipped or not processed yet.
-            # For now, we assume 'add_download' always precedes 'update_download_status'.
         else:
-            # This case should ideally not happen if 'add_download' is always sent first.
-            # If it does, it means an update came for an item not yet added.
-            # For robustness, we can log this as a warning, but we won't add it here
-            # to prevent duplicates if 'add_download' comes later.
             print(f"WARNING: Received update for unknown download URL: {url}. Data: {new_data_dict}")
 
 
@@ -2627,59 +2557,7 @@ class AddDownloadDialog(QDialog):
 
     def apply_dialog_style(self):
         self.setStyleSheet("""
-            QDialog {
-                background-color: #2d2d2d;
-                border-radius: 10px;
-                border: 1px solid #495057;
-            }
-            QLabel {
-                color: #e0e0e0;
-                font-size: 13px;
-            }
-            QLineEdit {
-                background-color: #3a3a3a;
-                border: 1px solid #495057;
-                border-radius: 5px;
-                padding: 5px;
-                color: #e0e0e0;
-            }
-            QLineEdit:focus {
-                border: 1px solid #4dabf7;
-            }
-            QRadioButton::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                border: 2px solid #495057;
-                background-color: #2d2d2d;
-            }
-            QRadioButton::indicator:checked {
-                background-color: #4dabf7;
-                border: 2px solid #4dabf7;
-            }
-            QRadioButton {
-                color: #e0e0e0;
-            }
-            QPushButton {
-                background-color: #4dabf7;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 8px 15px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #3b8fcc;
-            }
-            QPushButton#cancelButton {
-                background-color: #6c757d;
-            }
-            QPushButton#cancelButton:hover {
-                background-color: #5a6268;
-            }
-            QPushButton:focus {
-                outline: none;
-            }
+           button style goes here
         """)
 
     def init_ui(self):
@@ -2776,35 +2654,7 @@ class ConfirmationDialog(QDialog):
 
     def apply_dialog_style(self):
         self.setStyleSheet("""
-            QDialog {
-                background-color: #2d2d2d;
-                border-radius: 10px;
-                border: 1px solid #495057;
-            }
-            QLabel {
-                color: #e0e0e0;
-                font-size: 13px;
-            }
-            QPushButton {
-                background-color: #4dabf7;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 8px 15px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #3b8fcc;
-            }
-            QPushButton#cancelButton {
-                background-color: #6c757d;
-            }
-            QPushButton#cancelButton:hover {
-                background-color: #5a6268;
-            }
-            QPushButton:focus {
-                outline: none;
-            }
+            buton style goes here
         """)
 
 
