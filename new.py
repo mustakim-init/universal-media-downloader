@@ -1,4 +1,4 @@
-"""necessary imports and global variables for the Universal Media Downloader GUI project"""
+"""necessary imports and global variables for the Universal Media Downloader GUI project goes here did not include the imports in the code snippet as it makes it too long for claude"""
 # --- Path Helper Function ---
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
@@ -31,9 +31,6 @@ if not os.path.exists(global_download_save_directory):
 
 global_overwrite_existing_file = False # Default: do NOT overwrite, add suffix
 global_double_click_action = "Open folder" # Default: open folder on double click
-# --- END NEW GLOBAL SETTINGS VARIABLES ---
-
-# Message queue for inter-thread communication (Flask to GUI)
 gui_message_queue = queue.Queue()
 
 # Ensure binaries exist (for debugging during development)
@@ -178,8 +175,6 @@ def get_formats_flask():
                 protocol = protocol_match.group(1) if protocol_match else 'unknown'
 
                 if protocol == 'm3u8':
-                    # For m3u8, the 'ext' column might be a suggestion.
-                    # We need to infer the actual target extension from codec info.
                     if 'mp4a' in codec_info.lower() or 'aac' in codec_info.lower():
                         final_ext = 'mp4' # For AAC audio in HLS, it's typically MP4
                     elif 'opus' in codec_info.lower() or 'vorbis' in codec_info.lower() or 'vp9' in codec_info.lower():
@@ -188,9 +183,7 @@ def get_formats_flask():
                         final_ext = 'mp4' # For AVC video in HLS, it's typically MP4
                     else:
                         final_ext = ext_raw # Fallback to raw if no specific codec hint
-                # --- END NEW LOGIC ---
 
-                # --- REFINED LABEL GENERATION ---
                 label_parts = []
                 label_parts.append(f"ID: {format_id}")
                 label_parts.append(f"Ext: {final_ext}") # Use the determined final_ext for the label
@@ -215,7 +208,6 @@ def get_formats_flask():
                     label_parts.append(f"Size: {filesize}")
                 
                 label = " | ".join(label_parts)
-                # --- END REFINED LABEL GENERATION ---
 
                 format_entry = {
                     'id': format_id, 
@@ -369,9 +361,6 @@ def download_flask():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-
-
-# Helper function to parse filesize string (e.g., "1.23MiB") to bytes
 def parse_filesize_to_bytes(filesize_str):
     if not isinstance(filesize_str, str):
         return 0
@@ -409,15 +398,10 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
     Performs the yt-dlp download operation in a separate thread.
     Handles filename generation and communicates progress to the GUI.
     """
-    # Initial filename, will be updated as download progresses
     filename_base = "Playlist Download" if is_playlist else os.path.basename(url) 
     final_downloaded_file_path = None # This will hold the path to the final downloaded file
-    
-    # Initialize these to None, will be determined based on actual downloaded content
     detected_filetype = 'unknown' 
     filename = filename_base # Initialize filename for GUI display
-
-    # Initialize stdout/stderr lines and outputs here so they are always defined
     stdout_lines = []
     stderr_lines = []
     stdout_output = "" 
@@ -425,7 +409,6 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
     current_process = None # Initialize process to None
 
     try:
-        # --- Determine the final output path and filename with overwrite/suffix logic ---
         info_command = [
             YT_DLP_BIN,
             '--get-filename',
@@ -518,7 +501,6 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
             creationflags=SUBPROCESS_CREATION_FLAGS,
             startupinfo=startupinfo
         )
-        # IMPORTANT: Send the process object AND the cancel_event to the main GUI thread for tracking
         gui_message_queue.put({'type': 'add_process', 'url': url, 'process': current_process, 'cancel_event': cancel_event}) 
         
         while True:
@@ -526,20 +508,15 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
             if cancel_event.is_set():
                 print(f"DEBUG: Cancellation event set for {url}. Breaking download loop.")
                 break
-            # --- End cancellation check ---
-
             stdout_line = current_process.stdout.readline()
             stderr_line = current_process.stderr.readline()
 
-            # If process has terminated and no more output, break
             if not stdout_line and not stderr_line and current_process.poll() is not None:
                 break
-            
-            # If process has terminated but there's still output to read, continue reading
+
             if current_process.poll() is not None and (stdout_line or stderr_line):
                 pass # Continue processing lines
-            
-            # Check for external termination (e.g., by taskkill)
+
             if current_process.poll() is not None and current_process.returncode != 0:
                 stdout_output = "".join(stdout_lines) 
                 stderr_output = "".join(stderr_lines) 
@@ -563,9 +540,7 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
 
             if stderr_line:
                 stderr_lines.append(stderr_line)
-            
-            # --- Small sleep to yield control and allow event check to be more frequent ---
-            # This is a compromise for responsiveness if there's no output for a while.
+
             if not stdout_line and not stderr_line:
                 time.sleep(0.05) # Sleep for 50ms if no output
             # --- End small sleep ---
@@ -599,12 +574,9 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
         if return_code != 0: 
             error_detail = f"STDOUT: {stdout_output.strip()}\nSTDERR: {stderr_output.strip()}"
             raise Exception(f"yt-dlp download failed (exit code {return_code}):\n{error_detail}")
-        
-        # --- SMARTER APPROACH: Use the pre-calculated final_output_template as the expected path ---
+
         final_downloaded_file_path = final_output_template
         
-        # Crucial check: Verify that the file actually exists at the predicted path
-        # Only check if the process completed successfully (return_code == 0)
         if not os.path.exists(final_downloaded_file_path):
             error_message = (
                 f"Final downloaded file not found at expected path: {final_downloaded_file_path}. "
@@ -613,8 +585,6 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
             )
             raise Exception(error_message)
 
-
-        # --- Post-download/merge checks and final update (only if successful) ---
         actual_filesize_bytes = os.path.getsize(final_downloaded_file_path)
         actual_filename = os.path.basename(final_downloaded_file_path)
 
@@ -672,8 +642,6 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
         gui_message_queue.put({'type': 'remove_process', 'url': url})
 
 
-
-
 @flask_app.route('/set_browser_monitor_status', methods=['POST'])
 def set_browser_monitor_status():
     """Endpoint to enable/disable browser monitoring."""
@@ -689,9 +657,6 @@ def set_browser_monitor_status():
     return jsonify({'status': 'error', 'message': 'Invalid status provided'}), 400
 
 
-# --- PySide6 GUI Setup ---
-
-# Custom Button for Sidebar with Hover Effect
 class SidebarButton(QPushButton):
     def __init__(self, text, icon_svg=None, parent=None):
         super().__init__("", parent) # Initialize with empty text, will use icon
@@ -950,8 +915,6 @@ class QCustomCheckBox(QCheckBox):
         self.update()
 
     def setup_animation(self, value):
-        # Calculate start and end values for the thumb's position
-        # Thumb moves from left (margin) to right (track_width - thumb_size - margin)
         margin = 3 # Margin from the edge of the track
         track_width = self.height() * 2.0
         thumb_size = self.height() - 6
@@ -1002,7 +965,6 @@ class QCustomCheckBox(QCheckBox):
 
         painter.end()
 
-# New CustomHeaderView class to manage sort indicator as a QLabel
 class CustomHeaderView(QHeaderView):
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
@@ -1014,8 +976,6 @@ class CustomHeaderView(QHeaderView):
         self.sort_indicator_label.setFixedSize(10, 10) # Size for the arrow icon
         self.sort_indicator_label.setAlignment(Qt.AlignCenter) # Center the icon in the label
         self.sort_indicator_label.setStyleSheet("background-color: transparent;") # Ensure no background interferes
-        
-        # Connect to the section clicked signal to update the sort indicator
         self.sectionClicked.connect(self._update_sort_indicator_position)
         self.sectionResized.connect(self._update_sort_indicator_position)
         self.sectionMoved.connect(self._update_sort_indicator_position)
@@ -1027,34 +987,23 @@ class CustomHeaderView(QHeaderView):
         sort_order = self.sortIndicatorOrder()
 
         if sort_column != -1: # If a column is sorted
-            # Get the full rectangle for the sorted section
             section_x = self.sectionViewportPosition(sort_column)
             section_y = 0 # Relative to the header view's own top edge
             section_width = self.sectionSize(sort_column)
             section_height = self.height() # The height of the entire header view
-            
             section_rect = QRect(section_x, section_y, section_width, section_height)
-
-            # Calculate position for the label:
-            # X: Center the label horizontally within the section
             label_x = section_rect.left() + (section_rect.width() - self.sort_indicator_label.width()) // 2
             
-            # Y: Position the label at the top of the section with a small margin
-            # We want the arrow to be at the very top, and the text below it.
-            # Let's say we want 2px padding from the top of the header.
             label_y = section_rect.top() + 2 # 2px from the top of the section
             
             self.sort_indicator_label.move(label_x, label_y)
             
-            # Set the appropriate arrow icon
             if sort_order == Qt.AscendingOrder:
                 self._set_arrow_icon(ICONS["arrow-up"])
             elif sort_order == Qt.DescendingOrder:
                 self._set_arrow_icon(ICONS["arrow-down"])
             
             self.sort_indicator_label.show()
-            
-            # Request a repaint of the header to ensure the label is drawn correctly
             self.viewport().update() 
         else:
             self.sort_indicator_label.hide() # Hide if no column is sorted
@@ -1067,15 +1016,13 @@ class CustomHeaderView(QHeaderView):
         
         pixmap = QPixmap()
         pixmap.loadFromData(colored_svg.encode('utf-8'))
-        
-        # Scale pixmap to desired icon size
+
         scaled_pixmap = pixmap.scaled(self.sort_indicator_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.sort_indicator_label.setPixmap(scaled_pixmap)
 
 
     def setModel(self, model):
         super().setModel(model)
-        # Re-evaluate sort indicator position when model changes (e.g., when data is filtered)
         self._update_sort_indicator_position()
 
 class DownloadTableModel(QAbstractTableModel):
@@ -1124,7 +1071,7 @@ class DownloadTableModel(QAbstractTableModel):
                     path = item.get('path', 'N/A')
                     return os.path.dirname(path) if path != 'N/A' else 'N/A'
             except IndexError:
-                # This can happen briefly during filtering; it's safe to ignore.
+                
                 return None
         return None
 
@@ -1333,25 +1280,7 @@ class MainWindow(QMainWindow):
         self.add_download_button_nav.setFixedSize(180, 40)
         self.add_download_button_nav.setCursor(Qt.PointingHandCursor)
         self.add_download_button_nav.setStyleSheet("""
-            QPushButton {
-                background-color: #4dabf7; /* Accent color */
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 14px;
-                font-weight: bold;
-                text-align: center; /* Center text for this button */
-                padding: 5px 10px; /* Add padding */
-            }
-            QPushButton:hover {
-                background-color: #3b8fcc; /* Darker accent on hover */
-            }
-            QPushButton:pressed {
-                background-color: #2b7bb5;
-            }
-            QPushButton:focus {
-                outline: none;
-            }
+  stylesheet goes here
         """)
         self.add_download_button_nav.clicked.connect(self.open_add_download_dialog)
         self.sidebar_layout.addWidget(self.add_download_button_nav)
@@ -1363,7 +1292,6 @@ class MainWindow(QMainWindow):
 
         main_splitter.addWidget(self.sidebar_frame) # Add sidebar to splitter
 
-        # Main Content Area (Stacked Widget)
         self.content_container_widget = QWidget() # New container widget for content area
         self.main_content_vlayout = QVBoxLayout(self.content_container_widget)
         self.main_content_vlayout.setContentsMargins(0, 0, 0, 0)
@@ -1376,7 +1304,6 @@ class MainWindow(QMainWindow):
         self.top_bar_layout.setContentsMargins(20, 0, 20, 0)
         self.top_bar_layout.setSpacing(10)
 
-        # Create a horizontal layout for action buttons
         action_buttons_layout = QHBoxLayout()
         action_buttons_layout.setContentsMargins(0, 0, 0, 0) # No margins for this sub-layout
         action_buttons_layout.setSpacing(10) # Spacing between buttons
@@ -1393,13 +1320,10 @@ class MainWindow(QMainWindow):
         action_buttons_layout.addWidget(self.cancel_button)
         action_buttons_layout.addWidget(self.refresh_button)
 
-        # Add the action buttons layout to the main top bar layout
         self.top_bar_layout.addLayout(action_buttons_layout)
 
-        # Add a stretch to push the search bar to the right and allow it to expand
         self.top_bar_layout.addStretch(1)
 
-        # Add the search input
         self.search_input = SearchLineEdit(self, self) 
         self.top_bar_layout.addWidget(self.search_input)
         
@@ -1421,7 +1345,6 @@ class MainWindow(QMainWindow):
         self.settings_panel = self.create_settings_panel()
         self.extension_setup_panel = self.create_extension_setup_panel()
         self.download_settings_panel = self.create_download_settings_panel()
-        # self.uri_scheme_setup_panel = self.create_uri_scheme_setup_panel() # REMOVED
 
         self.content_stacked_widget.addWidget(self.active_downloads_panel)
         self.content_stacked_widget.addWidget(self.completed_videos_panel)
@@ -1431,9 +1354,6 @@ class MainWindow(QMainWindow):
         self.content_stacked_widget.addWidget(self.settings_panel)
         self.content_stacked_widget.addWidget(self.extension_setup_panel)
         self.content_stacked_widget.addWidget(self.download_settings_panel)
-        # self.content_stacked_widget.addWidget(self.uri_scheme_setup_panel) # REMOVED
-
-        # --- Status Bar ---
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar) 
 
@@ -1485,24 +1405,16 @@ class MainWindow(QMainWindow):
         self.convert_media_button.clicked.connect(lambda: self.show_panel(self.conversion_panel))
         self.add_download_button_nav.clicked.connect(self.open_add_download_dialog)
         self.settings_button.clicked.connect(lambda: self.show_panel(self.settings_panel))
-
-        # Connect internal signals for GUI updates from Flask threads
         self.add_download_signal.connect(self.add_download_to_list)
         self.update_download_status_signal.connect(self.update_download_status_in_list)
         self.add_completed_signal.connect(self.add_completed_download)
-        # self.add_conversion_signal.connect(self.add_conversion_to_list) # Commented out
-        # self.update_conversion_status_signal.connect(self.update_conversion_status_in_list) # Commented out
         self.show_status_signal.connect(self.show_status)
         self.set_buttons_disabled_signal.connect(self.set_all_buttons_disabled)
-
-        # Connect action buttons
         self.delete_button.clicked.connect(self.delete_selected_items)
         self.open_button.clicked.connect(self.open_selected_file)
         self.open_folder_button.clicked.connect(self.open_selected_folder)
         self.cancel_button.clicked.connect(self.cancel_download)
         self.refresh_button.clicked.connect(self.refresh_current_view)
-
-        # --- ADDED: Connect double-click signals for all table views ---
         self.active_downloads_table_view.doubleClicked.connect(self.handle_table_double_click)
         self.completed_videos_table_view.doubleClicked.connect(self.handle_table_double_click)
         self.completed_audios_table_view.doubleClicked.connect(self.handle_table_double_click)
@@ -1536,8 +1448,6 @@ class MainWindow(QMainWindow):
             self.open_selected_file()
         else:
             self.show_status("Unknown double-click action configured.", "error")
-
-
 
     def show_status(self, message, msg_type='info', timeout_ms=5000): # Added timeout_ms parameter
         """Updates the status bar with a given message and color, clears after timeout."""
@@ -1574,21 +1484,12 @@ class MainWindow(QMainWindow):
             self.cancel_button, self.refresh_button,
             # Search
             self.search_input,
-            # Conversion Panel (Now handled by the placeholder panel, but keeping these commented for future)
-            # self.browse_input_file_button, self.output_format_dropdown,
-            # self.browse_output_dir_button, self.start_conversion_button,
-            # self.video_codec_dropdown, self.back_button_convert,
-            # Settings Panel
             self.browser_monitor_switch, self.go_to_extension_button,
             self.go_to_download_settings_button,
-            # self.go_to_uri_scheme_button, # REMOVED
-            # Extension Setup Panel
             self.browse_extension_dir_button, self.extract_extension_button, self.back_button_ext,
-            # Download Settings Panel
             self.browse_default_download_dir_button, self.overwrite_checkbox,
             self.double_click_action_dropdown, self.back_button_dl,
-            # URI Scheme Panel
-            # self.back_button_uri, # REMOVED
+            
         ]
         
         for widget in widgets_to_disable:
@@ -1607,7 +1508,7 @@ class MainWindow(QMainWindow):
 
     def show_panel(self, panel_to_show):
         """Switches the main content area to display the specified panel."""
-        # Uncheck all buttons in the group first to ensure exclusive selection
+
         for button in self.sidebar_button_group.buttons():
             button.setChecked(False)
 
@@ -1621,7 +1522,6 @@ class MainWindow(QMainWindow):
         self.refresh_button.setVisible(False)
         self.search_input.setVisible(False) # Hide search by default
 
-        # Update current panel type for search filtering and set the correct button as checked
         if panel_to_show == self.active_downloads_panel:
             self.current_panel_type = "active_downloads"
             self.active_downloads_button.setChecked(True)
@@ -1641,8 +1541,6 @@ class MainWindow(QMainWindow):
             self.completed_videos_button.setChecked(True)
             self.completed_videos_table_view.setModel(self.completed_videos_model) # Ensure correct model is set
             self.completed_videos_table_view.sortByColumn(1, Qt.DescendingOrder) # Default sort by date desc
-            
-            # Show relevant action buttons for Completed Videos
             self.search_input.setVisible(True)
             self.delete_button.setVisible(True)
             self.open_button.setVisible(True)
@@ -1654,8 +1552,6 @@ class MainWindow(QMainWindow):
             self.completed_audios_button.setChecked(True)
             self.completed_audios_table_view.setModel(self.completed_audios_model) # Ensure correct model is set
             self.completed_audios_table_view.sortByColumn(1, Qt.DescendingOrder) # Default sort by date desc
-            
-            # Show relevant action buttons for Completed Audios
             self.search_input.setVisible(True)
             self.delete_button.setVisible(True)
             self.open_button.setVisible(True)
@@ -1667,8 +1563,6 @@ class MainWindow(QMainWindow):
             self.completed_playlists_button.setChecked(True)
             self.completed_playlists_table_view.setModel(self.completed_playlists_model) # Ensure correct model is set
             self.completed_playlists_table_view.sortByColumn(1, Qt.DescendingOrder) # Default sort by date desc
-            
-            # Show relevant action buttons for Completed Playlists
             self.search_input.setVisible(True)
             self.delete_button.setVisible(True)
             self.open_button.setVisible(True)
@@ -1723,7 +1617,7 @@ class MainWindow(QMainWindow):
         filtered_data = []
         if search_query:
             for item_info in source_data:
-                # Search in filename, URL, status, type (for completed)
+
                 search_text = (
                     item_info.get('filename', '').lower() + 
                     item_info.get('url', '').lower() + 
@@ -1735,12 +1629,10 @@ class MainWindow(QMainWindow):
         else:
             filtered_data = source_data[:] # Show all, use a copy
 
-        # Temporarily update the model's internal data and reset
         current_model.layoutAboutToBeChanged.emit()
         current_model._data = filtered_data # Directly modify the underlying list
         current_model.layoutChanged.emit()
         
-        # Re-apply current sort order after filtering
         sort_column = current_table_view.horizontalHeader().sortIndicatorSection()
         sort_order = current_table_view.horizontalHeader().sortIndicatorOrder()
         if sort_column != -1:
@@ -1749,7 +1641,6 @@ class MainWindow(QMainWindow):
         QApplication.processEvents() # Force redraw
 
 
-    # --- Action Button Implementations ---
     def _get_selected_item_data(self):
         """Helper to get data for the currently selected row in the active table view."""
         current_table_view = None
@@ -1853,7 +1744,6 @@ class MainWindow(QMainWindow):
 
         confirm_dialog = ConfirmationDialog(f"Are you sure you want to cancel '{selected_item.get('filename', 'this download')}'?", self)
         if confirm_dialog.exec() == QDialog.Accepted:
-            # Attempt to terminate the subprocess
             if url_to_cancel in self.active_processes:
                 process_info = self.active_processes[url_to_cancel]
                 process_to_terminate = process_info.get('process')
@@ -1864,13 +1754,12 @@ class MainWindow(QMainWindow):
                     return
 
                 try:
-                    # 1. Set the internal cancellation event
+                    
                     cancel_event.set()
                     print(f"DEBUG: Set cancellation event for {url_to_cancel}")
 
                     if process_to_terminate and process_to_terminate.poll() is None: # Only try to terminate if still running
                         if sys.platform == 'win32':
-                            # On Windows, use taskkill /F /T to forcefully terminate process tree
                             print(f"DEBUG: Attempting to terminate process tree (PID: {process_to_terminate.pid}) for {url_to_cancel} using taskkill.")
                             subprocess.run(['taskkill', '/F', '/T', '/PID', str(process_to_terminate.pid)], 
                                            check=False,
@@ -1893,12 +1782,8 @@ class MainWindow(QMainWindow):
                     else:
                         print(f"DEBUG: Process for {url_to_cancel} was already terminated or not found when cancel was clicked.")
 
-                    # Update GUI status immediately to show it's being cancelled
                     self.active_downloads_model.updateItem(url_to_cancel, {'status': 'Cancelling...', 'progress': '0%', 'message': 'Cancellation requested.'})
                     self.show_status(f"Cancellation requested for '{selected_item.get('filename')}'", "info")
-                    
-                    # The _perform_yt_dlp_download thread will handle the final 'Cancelled' status
-                    # and removal from active_downloads_model once it fully exits.
                     
                 except Exception as e:
                     self.show_status(f"Error during cancellation attempt: {e}", "error")
@@ -2197,8 +2082,6 @@ class MainWindow(QMainWindow):
 
         button_layout = QHBoxLayout()
         button_layout.addStretch(1)
-        
-        # --- FIX: Unique back button name ---
         self.back_button_dl = QPushButton("Back")
         self.back_button_dl.setFixedSize(100, 30)
         self.back_button_dl.setStyleSheet("QPushButton:focus { outline: none; }")
@@ -2306,7 +2189,6 @@ class MainWindow(QMainWindow):
         """Adds a completed download to the appropriate completed list and removes it from active."""
         filetype = download_info.get('filetype', 'unknown')
         
-        # Add to appropriate master data list and model
         if filetype == 'video':
             self.completed_videos_data.append(download_info)
             if self.current_panel_type == 'completed_videos':
@@ -2324,9 +2206,6 @@ class MainWindow(QMainWindow):
             self.completed_videos_data.append(download_info) # Fallback to video
             if self.current_panel_type == 'completed_videos':
                 self.completed_videos_model.addItem(download_info)
-
-        # Remove from active downloads master list and model
-        self.active_downloads_data[:] = [d for d in self.active_downloads_data if d.get('url') != download_info.get('url')]
         self.active_downloads_model.removeItem(download_info.get('url'))
         
         QApplication.processEvents()
@@ -2346,9 +2225,7 @@ class MainWindow(QMainWindow):
                         # Add the process and its associated cancel_event to the tracker
                         # This is where the process and event are stored in self.active_processes
                         self._add_process_to_tracker(message['url'], {'process': None, 'cancel_event': cancel_event})
-                        # Note: The 'process' itself is added later in _perform_yt_dlp_download
-                        # via another 'add_process' message type. This is a slight redundancy
-                        # but ensures the cancel_event is available early.
+                        
                 elif message['type'] == 'add_process': # This message is sent from _perform_yt_dlp_download
                     # Update the stored process object for the URL
                     url = message['url']
@@ -2510,8 +2387,6 @@ class MainWindow(QMainWindow):
             self.set_buttons_disabled_signal.emit(False)
         QApplication.processEvents()
 
-
-
 # Dialog for adding a new download
 class AddDownloadDialog(QDialog):
     def __init__(self, parent=None):
@@ -2626,8 +2501,6 @@ class ConfirmationDialog(QDialog):
             buton style goes here
         """)
 
-
-# --- Main Application Logic ---
 def start_flask_server():
     """Function to start the Flask server in a separate thread."""
     try:
@@ -2640,10 +2513,6 @@ def start_flask_server():
         print(f"Flask server failed to start: {e}")
 
 if __name__ == "__main__":
-    # Removed URI scheme handling from startup
-    # if len(sys.argv) > 1 and sys.argv[1].startswith("universalmediatool://"):
-    #     print(f"Application launched via URI scheme: {sys.argv[1]}")
-
     flask_thread = threading.Thread(target=start_flask_server, daemon=True)
     flask_thread.start()
     
