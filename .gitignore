@@ -1,0 +1,13 @@
+# Ignore executables
+*.exe
+
+# Ignore __pycache__ and Python-related
+__pycache__/
+*.pyc
+
+# Ignore VS Code settings (optional)
+.vscode/
+
+# Ignore system files
+.DS_Store
+Thumbs.db
