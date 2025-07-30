@@ -1,32 +1,4 @@
-import sys
-import os 
-import threading
-import subprocess
-import shutil
-import queue
-import re
-import time
-import json
-import requests # For Flask communication
-from datetime import datetime
-
-# Import PySide6 modules
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QStackedWidget, QScrollArea, QFrame,
-    QFileDialog, QComboBox, QLineEdit, QRadioButton, QButtonGroup,
-    QProgressBar, QSizePolicy, QSpacerItem, QDialog, QGraphicsDropShadowEffect,
-    QCheckBox, QStatusBar, QPlainTextEdit, QSplitter,
-    QTableView, QHeaderView, QAbstractItemView, QStyledItemDelegate, QStyleOptionHeader
-)
-from PySide6.QtCore import (
-    Qt, QTimer, QPropertyAnimation, QUrl, Signal, QEasingCurve, Property, QModelIndex, QPoint, QSize,
-    QAbstractTableModel, QRect, QPointF, QRectF
-)
-from PySide6.QtGui import QColor, QFont, QDesktopServices, QIcon, QPixmap, QPalette, QPaintEvent, QPainter, QFontMetrics, QPen, QPolygonF, QCursor
-from PySide6.QtWidgets import QStyleOption, QStyle # Needed for QCustomCheckBox paintEvent
-from PySide6.QtSvg import QSvgRenderer
-
+"""necessary imports and global variables for the Universal Media Downloader GUI project"""
 # --- Path Helper Function ---
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and for PyInstaller"""
@@ -45,21 +17,18 @@ if sys.platform == 'win32':
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = subprocess.SW_HIDE
 
-
 SUBPROCESS_CREATION_FLAGS = subprocess.DETACHED_PROCESS if sys.platform == 'win32' else 0
 
 YT_DLP_BIN = resource_path('yt-dlp.exe') if sys.platform == 'win32' else resource_path('yt-dlp')
 FFMPEG_BIN = resource_path(os.path.join('ffmpeg', 'bin', 'ffmpeg.exe')) if sys.platform == 'win32' else resource_path(os.path.join('ffmpeg', 'bin', 'ffmpeg'))
 EXTENSION_SOURCE_DIR_BUNDLE = resource_path('extension')
 
-# Global state variables
-# This variable is shared between the main GUI thread and the Flask server thread.
+
 browser_monitor_enabled = True # Initial state
 global_download_save_directory = os.path.join(os.path.expanduser("~"), 'Downloads')
 if not os.path.exists(global_download_save_directory):
     os.makedirs(global_download_save_directory, exist_ok=True)
 
-# --- NEW GLOBAL SETTINGS VARIABLES ---
 global_overwrite_existing_file = False # Default: do NOT overwrite, add suffix
 global_double_click_action = "Open folder" # Default: open folder on double click
 # --- END NEW GLOBAL SETTINGS VARIABLES ---
