@@ -1971,77 +1971,7 @@ class MainWindow(QMainWindow):
 
 # Dialog for adding a new download
 class AddDownloadDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Add New Download")
-        self.setFixedSize(500, 250) 
-        self.setModal(True)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-
-        self.init_ui()
-        self.apply_dialog_style()
-
-    def apply_dialog_style(self):
-        self.setStyleSheet("""
-           button style goes here
-        """)
-
-    def init_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
-
-        # URL input
-        url_label = QLabel("Enter URL:")
-        main_layout.addWidget(url_label)
-        
-        self.url_entry = QLineEdit()
-        self.url_entry.setPlaceholderText("Video, Audio, or Playlist URL")
-        self.url_entry.setToolTip("Paste the URL of the video, audio, or playlist you want to download.")
-        main_layout.addWidget(self.url_entry)
-
-        url_help_label = QLabel("Example: https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-        url_help_label.setStyleSheet("color: #adb5bd; font-size: 11px;")
-        main_layout.addWidget(url_help_label)
-        
-        # Media type selection
-        type_label = QLabel("Select Media Type:")
-        main_layout.addWidget(type_label)
-        
-        media_type_layout = QHBoxLayout()
-        self.media_type_group = QButtonGroup(self)
-        
-        self.radio_video = QRadioButton("Video")
-        self.radio_video.setChecked(True)
-        self.media_type_group.addButton(self.radio_video)
-        media_type_layout.addWidget(self.radio_video)
-        
-        self.radio_audio = QRadioButton("Audio")
-        self.media_type_group.addButton(self.radio_audio)
-        media_type_layout.addWidget(self.radio_audio)
-        
-        media_type_layout.addStretch(1)
-        main_layout.addLayout(media_type_layout)
-
-        # --- FIX: Add stretch to improve layout ---
-        main_layout.addStretch(1)
-
-        # Action buttons
-        button_layout = QHBoxLayout()
-        button_layout.addStretch(1)
-        
-        self.ok_button = QPushButton("Start Download")
-        self.ok_button.setCursor(Qt.PointingHandCursor)
-        self.ok_button.clicked.connect(self.accept)
-        button_layout.addWidget(self.ok_button)
-        
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setObjectName("cancelButton")
-        self.cancel_button.setCursor(Qt.PointingHandCursor)
-        self.cancel_button.clicked.connect(self.reject)
-        button_layout.addWidget(self.cancel_button)
-        
-        main_layout.addLayout(button_layout)
+    """Dialog for adding a new download via URL. but didn't add it to make the code shorter"""
 
 # Custom Confirmation Dialog (replaces QMessageBox)
 class ConfirmationDialog(QDialog):
