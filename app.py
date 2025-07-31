@@ -114,24 +114,61 @@ def after_request(response):
     header['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     return response
 
-def run_command_in_bundle(command_parts, *args, check_return_code=True, **kwargs):
-    """Helper to run yt-dlp or ffmpeg with correct paths and startup info."""
-    # Ensure the binary path is correct
-    if command_parts[0] == 'yt-dlp':
+
+# --- Helper Function for Running yt-dlp/ffmpeg Commands ---
+def run_command_in_bundle(command_parts, capture_output=False, text=False, timeout=None, check=True, **kwargs):
+    """
+    Runs a subprocess command, ensuring yt-dlp and ffmpeg paths are used.
+    Handles common subprocess.run arguments explicitly.
+    
+    Args:
+        command_parts (list): List of command and its arguments.
+        capture_output (bool): Whether to capture stdout/stderr.
+        text (bool): Whether to decode stdout/stderr as text.
+        timeout (int): Timeout for the command in seconds.
+        check (bool): If True, raise CalledProcessError if return code is non-zero.
+        **kwargs: Any additional keyword arguments to pass directly to subprocess.run.
+    """
+    # Ensure yt-dlp and ffmpeg are in the PATH for the subprocess
+    env_vars = os.environ.copy()
+    ffmpeg_dir = os.path.dirname(FFMPEG_BIN)
+    if ffmpeg_dir not in env_vars.get('PATH', '').split(os.pathsep):
+        env_vars['PATH'] = ffmpeg_dir + os.pathsep + env_vars.get('PATH', '')
+
+    # Replace 'yt-dlp' with the full path if it's the first element
+    if command_parts and command_parts[0] == 'yt-dlp':
         command_parts[0] = YT_DLP_BIN
-    elif command_parts[0] == 'ffmpeg':
-        command_parts[0] = FFMPEG_BIN
     
-    if not os.path.exists(command_parts[0]):
-        raise FileNotFoundError(f"Required binary not found: {command_parts[0]}. Please ensure it's bundled correctly or in your system's PATH.")
-    
-    if sys.platform == 'win32':
-        kwargs['startupinfo'] = startupinfo
-        if 'creationflags' in kwargs:
-            del kwargs['creationflags']
-        
-    # Pass the check_return_code argument to subprocess.run
-    return subprocess.run(command_parts, *args, check=check_return_code, **kwargs)
+    logger.debug(f"Running command: {' '.join(command_parts)}")
+
+    try:
+        # Explicitly pass arguments to subprocess.run
+        return subprocess.run(
+            command_parts,
+            capture_output=capture_output,
+            text=text,
+            timeout=timeout,
+            check=check, # Pass the 'check' argument directly
+            env=env_vars,
+            startupinfo=startupinfo,
+            creationflags=SUBPROCESS_CREATION_FLAGS,
+            **kwargs # Pass any other remaining keyword arguments
+        )
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Command failed with exit code {e.returncode}: {e.cmd}")
+        logger.error(f"STDOUT: {e.stdout}")
+        logger.error(f"STDERR: {e.stderr}")
+        raise # Re-raise the exception after logging
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"Command timed out after {e.timeout} seconds: {e.cmd}")
+        raise
+    except FileNotFoundError:
+        logger.error(f"Command not found. Ensure '{command_parts[0]}' exists and is executable.")
+        raise
+    except Exception as e:
+        logger.exception(f"An unexpected error occurred while running command: {command_parts}")
+        raise
+
 
 
 
@@ -339,7 +376,6 @@ def get_formats_flask():
 def health_check():
     """Health check endpoint for Flask server."""
     return jsonify({'status': 'healthy'}), 200
-
 
 
 @flask_app.route('/shutdown', methods=['POST'])
@@ -561,7 +597,7 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
             info_command,
             capture_output=True,
             text=True,
-            check_return_code=False,
+            check=False, # FIX: Changed from check_return_code=False to check=False
             timeout=15
         )
         predicted_filename_raw = info_result.stdout.strip()

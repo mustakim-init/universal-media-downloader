@@ -1,10 +1,10 @@
-// popup.js
+// popup.js - REDESIGNED UI & IMPROVED DETECTION
 
 const FLASK_PORT = 5000;
 const FLASK_BASE_URL = `http://localhost:${FLASK_PORT}`;
 
 // Get DOM elements
-const urlSelect = document.getElementById('urlSelect');
+const urlInput = document.getElementById('urlInput'); // Now a single input for detected/manual
 const detectionStatus = document.getElementById('detectionStatus');
 const mediaTypeRadios = document.querySelectorAll('input[name="mediaType"]');
 const downloadHighestQualityBtn = document.getElementById('downloadHighestQualityBtn');
@@ -17,31 +17,73 @@ const initialView = document.getElementById('initialView');
 const formatsSection = document.getElementById('formatsSection');
 const videoFormatsList = document.getElementById('videoFormatsList');
 const audioFormatsList = document.getElementById('audioFormatsList');
+const appConnectionStatusDiv = document.getElementById('appConnectionStatus');
+const retryConnectionBtn = document.getElementById('retryConnectionBtn');
 
 let selectedFormatId = null;
+let currentTabId = null;
+let isAppConnected = false; // Track connection status
+
+// Function to clean URLs (remove tracking parameters) - moved here for consistency
+function cleanUrl(url) {
+    try {
+        const urlObj = new URL(url);
+        // Remove common tracking parameters
+        ['utm_source', 'utm_medium', 'fbclid', 'gclid', 'feature'].forEach(param => {
+            urlObj.searchParams.delete(param);
+        });
+        // Remove YouTube specific parameters that don't affect content
+        if (urlObj.hostname.includes('youtube.com') || urlObj.hostname.includes('youtu.be')) {
+            ['index', 'list', 't', 'start', 'end'].forEach(param => {
+                urlObj.searchParams.delete(param);
+            });
+        }
+        return urlObj.toString();
+    } catch {
+        return url; // Return original URL if it's not a valid URL
+    }
+}
 
 // --- UI State Management Functions ---
-function showStatus(message, type = 'info') {
+function showStatus(message, type = 'info', timeout = 5000) {
     statusMessageDiv.textContent = message;
     statusMessageDiv.className = `status-message status-${type}`;
     statusMessageDiv.classList.remove('hidden');
-    setTimeout(() => {
-        statusMessageDiv.classList.add('hidden');
-    }, 5000);
+    if (timeout > 0) { // Only set timeout if > 0
+        setTimeout(() => {
+            statusMessageDiv.classList.add('hidden');
+        }, timeout);
+    }
 }
 
 function showLoading(show) {
     loadingSpinner.classList.toggle('hidden', !show);
 }
 
-function setUIState(isLoading) {
-    urlSelect.disabled = isLoading;
+function setUIState(isLoading, appConnected = isAppConnected) {
+    isAppConnected = appConnected; // Update global connection status
+    
+    urlInput.disabled = isLoading;
     mediaTypeRadios.forEach(radio => radio.disabled = isLoading);
-    const hasUrl = urlSelect.value && urlSelect.options.length > 0;
-    downloadHighestQualityBtn.disabled = isLoading || !hasUrl;
-    getFormatsBtn.disabled = isLoading || !hasUrl;
-    startDownloadBtn.disabled = isLoading || selectedFormatId === null;
+    
+    const hasUrlInInput = urlInput.value.trim() !== '';
+
+    downloadHighestQualityBtn.disabled = isLoading || !appConnected || !hasUrlInInput;
+    getFormatsBtn.disabled = isLoading || !appConnected || !hasUrlInInput;
+    startDownloadBtn.disabled = isLoading || !appConnected || selectedFormatId === null;
     backToInitialViewBtn.disabled = isLoading;
+
+    // Update app connection status display
+    if (appConnected) {
+        appConnectionStatusDiv.textContent = "Desktop App Connected";
+        appConnectionStatusDiv.className = "connected";
+        retryConnectionBtn.classList.add('hidden');
+    } else {
+        appConnectionStatusDiv.textContent = "Desktop App Disconnected";
+        appConnectionStatusDiv.className = "disconnected";
+        retryConnectionBtn.classList.remove('hidden');
+    }
+    appConnectionStatusDiv.classList.remove('hidden');
 }
 
 function showInitialView() {
@@ -72,6 +114,44 @@ async function getCurrentTab() {
     });
 }
 
+// Function to check desktop app connection with multiple endpoints
+async function checkAppConnection() {
+    const endpoints = ['/health', '/status', '/ping']; // Try common endpoints
+    
+    for (const endpoint of endpoints) {
+        try {
+            const response = await fetch(`${FLASK_BASE_URL}${endpoint}`, {
+                method: 'GET',
+                signal: AbortSignal.timeout(2000)
+            });
+            
+            if (response.ok) {
+                try {
+                    const data = await response.json();
+                    return data.status === 'healthy' || data.status === 'ok' || data.status === 'success';
+                } catch {
+                    // If JSON parsing fails but response is ok, consider it connected
+                    return true;
+                }
+            }
+        } catch (error) {
+            // console.warn(`Connection check failed for ${endpoint}:`, error); // Too verbose for console
+            continue;
+        }
+    }
+    return false;
+}
+
+// Basic URL validation
+function isValidUrl(string) {
+    try {
+        const url = new URL(string);
+        return url.protocol === "http:" || url.protocol === "https:";
+    } catch (_) {
+        return false;
+    }
+}
+
 // Setup format selection listeners
 function setupFormatSelection() {
     document.querySelectorAll('input[name="format"]').forEach(radio => {
@@ -84,19 +164,46 @@ function setupFormatSelection() {
 
 // --- Event Handlers ---
 
+// Unified URL input handling
+urlInput.addEventListener('input', () => {
+    // Clear status and re-evaluate buttons when user types
+    statusMessageDiv.classList.add('hidden');
+    setUIState(false);
+});
+
+urlInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+        // When Enter is pressed in the URL input, act as if 'Get Formats' was clicked
+        getFormatsBtn.click();
+    }
+});
+
+retryConnectionBtn.addEventListener('click', async () => {
+    showLoading(true);
+    setUIState(true, false); // Show disconnected state while retrying
+    showStatus('Retrying connection to desktop app...', 'info', 0); // Don't auto-hide
+    await initializePopup(); // Re-run the main initialization logic
+});
+
+
 getFormatsBtn.addEventListener('click', async () => {
-    const url = urlSelect.value;
+    const url = urlInput.value.trim(); // Get URL from the single input field
     if (!url) {
-        showStatus('No media URL selected.', 'error');
+        showStatus('Please enter or select a media URL.', 'error');
         return;
     }
+    if (!isValidUrl(url)) {
+        showStatus('Invalid URL format. Please enter a valid http:// or https:// URL.', 'error');
+        return;
+    }
+
     const mediaType = document.querySelector('input[name="mediaType"]:checked').value;
     videoFormatsList.innerHTML = '';
     audioFormatsList.innerHTML = '';
     selectedFormatId = null;
     showLoading(true);
     setUIState(true);
-    showStatus('Fetching formats...', 'info');
+    showStatus('Fetching available formats...', 'info');
 
     try {
         const response = await fetch(`${FLASK_BASE_URL}/formats`, {
@@ -126,13 +233,17 @@ getFormatsBtn.addEventListener('click', async () => {
                 });
                 setupFormatSelection();
             } else {
-                showStatus("No downloadable formats found for this URL.", "info");
+                showStatus("No downloadable formats found for this URL. Try a different URL.", "info");
+                showInitialView();
             }
         } else {
-            showStatus(`Error: ${data.message}`, 'error');
+            showStatus(`Error from app: ${data.message}`, 'error');
+            showInitialView();
         }
     } catch (error) {
-        showStatus('Could not connect to desktop app. Is it running?', 'error');
+        showStatus('Could not connect to desktop app. Please check if it\'s running and try again.', 'error');
+        setUIState(false, false); // Mark app as disconnected
+        showInitialView();
     } finally {
         showLoading(false);
         setUIState(false);
@@ -140,11 +251,16 @@ getFormatsBtn.addEventListener('click', async () => {
 });
 
 downloadHighestQualityBtn.addEventListener('click', async () => {
-    const url = urlSelect.value;
+    const url = urlInput.value.trim(); // Get URL from the single input field
     if (!url) {
-        showStatus('No media URL selected.', 'error');
+        showStatus('Please enter or select a media URL.', 'error');
         return;
     }
+    if (!isValidUrl(url)) {
+        showStatus('Invalid URL format. Please enter a valid http:// or https:// URL.', 'error');
+        return;
+    }
+
     const mediaType = document.querySelector('input[name="mediaType"]:checked').value;
     showLoading(true);
     setUIState(true);
@@ -159,9 +275,8 @@ downloadHighestQualityBtn.addEventListener('click', async () => {
         const data = await response.json();
 
         if (data.status === 'success') {
-            showStatus('Download initiated! Check desktop app.', 'success');
+            showStatus('Download initiated! Check desktop app for progress.', 'success');
         } else {
-            // Check for specific error message from the app
             if (data.message && data.message.includes("disabled")) {
                 showStatus('Error: Browser monitoring is disabled in the desktop app.', 'error');
             } else {
@@ -169,7 +284,8 @@ downloadHighestQualityBtn.addEventListener('click', async () => {
             }
         }
     } catch (error) {
-        showStatus('Could not connect to desktop app. Is it running?', 'error');
+        showStatus('Could not connect to desktop app. Please check if it\'s running and try again.', 'error');
+        setUIState(false, false); // Mark app as disconnected
     } finally {
         showLoading(false);
         setUIState(false);
@@ -177,15 +293,20 @@ downloadHighestQualityBtn.addEventListener('click', async () => {
 });
 
 startDownloadBtn.addEventListener('click', async () => {
-    const url = urlSelect.value;
+    const url = urlInput.value.trim(); // Get URL from the single input field
     if (!url) {
-        showStatus('URL has been lost. Please go back and select it again.', 'error');
+        showStatus('URL has been lost. Please go back and enter it again.', 'error');
         return;
     }
     if (selectedFormatId === null) {
         showStatus('Please select a format.', 'error');
         return;
     }
+    if (!isValidUrl(url)) {
+        showStatus('Invalid URL format. Please enter a valid http:// or https:// URL.', 'error');
+        return;
+    }
+
     const mediaType = document.querySelector('input[name="mediaType"]:checked').value;
     showLoading(true);
     setUIState(true);
@@ -200,13 +321,14 @@ startDownloadBtn.addEventListener('click', async () => {
         const data = await response.json();
 
         if (data.status === 'success') {
-            showStatus('Download initiated! Check desktop app.', 'success');
+            showStatus('Download initiated! Check desktop app for progress.', 'success');
             showInitialView();
         } else {
             showStatus(`Download failed: ${data.message}`, 'error');
         }
     } catch (error) {
-        showStatus('Could not connect to desktop app. Is it running?', 'error');
+        showStatus('Could not connect to desktop app. Please check if it\'s running and try again.', 'error');
+        setUIState(false, false); // Mark app as disconnected
     } finally {
         showLoading(false);
         setUIState(false);
@@ -215,48 +337,65 @@ startDownloadBtn.addEventListener('click', async () => {
 
 backToInitialViewBtn.addEventListener('click', showInitialView);
 
-// Initial setup on DOMContentLoaded
-document.addEventListener('DOMContentLoaded', async () => {
-    setUIState(true);
+// Main initialization function to be called on DOMContentLoaded and by retry button
+async function initializePopup() {
     showLoading(true);
+    setUIState(true, false); // Start with UI disabled and app disconnected
+
+    const appConnected = await checkAppConnection();
+    setUIState(false, appConnected); // Update UI based on actual connection status
+
+    if (!appConnected) {
+        showStatus('Desktop application is not running. Please start the desktop app to use this extension.', 'error', 0); // Don't auto-hide
+        urlInput.value = ''; // Clear input
+        detectionStatus.textContent = "Cannot detect URLs. Desktop app is not running.";
+        detectionStatus.classList.remove('hidden');
+        showLoading(false);
+        return;
+    }
 
     const currentTab = await getCurrentTab();
     if (!currentTab) {
         detectionStatus.textContent = "Could not get current tab info.";
         detectionStatus.classList.remove('hidden');
         showLoading(false);
-        setUIState(true); // Disable everything if no tab
+        setUIState(true, appConnected); // Keep buttons disabled if no tab info
         return;
     }
+    currentTabId = currentTab.id;
 
-    // Ask the background script for detected URLs
-    chrome.runtime.sendMessage({ type: 'get_media_urls', tabId: currentTab.id }, (response) => {
-        const detectedUrls = response.urls || [];
+    // FIX: Fetch detected URLs AND check current tab URL sequentially
+    chrome.runtime.sendMessage({ type: 'get_media_urls', tabId: currentTab.id }, async (response) => {
+        let detectedUrls = response.urls || [];
         
-        // Add the main page URL if it looks like a direct YouTube link
-        if (currentTab.url && (currentTab.url.includes("youtube.com/watch") || currentTab.url.includes("youtube.com/playlist"))) {
-            if (!detectedUrls.includes(currentTab.url)) {
-                detectedUrls.unshift(currentTab.url); // Add to the beginning
+        // Explicitly check and add current tab URL if it's a streaming URL
+        const currentTabUrlCleaned = cleanUrl(currentTab.url);
+        if (isValidUrl(currentTabUrlCleaned)) {
+            const isCurrentTabStreaming = await new Promise(resolve => {
+                chrome.runtime.sendMessage({ type: 'is_streaming_url', url: currentTabUrlCleaned }, (res) => {
+                    resolve(res ? res.isStreaming : false);
+                });
+            });
+
+            if (isCurrentTabStreaming && !detectedUrls.includes(currentTabUrlCleaned)) {
+                detectedUrls.unshift(currentTabUrlCleaned); // Add to the beginning
             }
         }
 
-        urlSelect.innerHTML = ''; // Clear dropdown
-
+        // Populate the single urlInput field
         if (detectedUrls.length > 0) {
-            detectedUrls.forEach(url => {
-                const option = document.createElement('option');
-                option.value = url;
-                // Truncate long URLs for display
-                option.textContent = url.length > 60 ? url.substring(0, 57) + '...' : url;
-                urlSelect.appendChild(option);
-            });
+            urlInput.value = detectedUrls[0]; // Set the first detected URL as the default
             detectionStatus.classList.add('hidden');
         } else {
-            detectionStatus.textContent = "No media streams detected on this page. Try playing a video to capture its URL.";
+            urlInput.value = ''; // Clear input if no URLs detected
+            detectionStatus.textContent = "No media streams detected on this page. Paste a URL above.";
             detectionStatus.classList.remove('hidden');
         }
 
         showLoading(false);
-        setUIState(false); // Enable UI based on whether URLs were found
+        setUIState(false, appConnected); // Enable UI based on app connection and URL presence
     });
-});
+}
+
+// Initial setup on DOMContentLoaded
+document.addEventListener('DOMContentLoaded', initializePopup);

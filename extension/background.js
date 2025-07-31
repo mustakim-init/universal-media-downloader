@@ -13,13 +13,33 @@ const MEDIA_CONTENT_TYPES = [
 
 const MEDIA_FILE_EXTENSIONS = ['.m3u8', '.ts', '.mp4', '.m4a', '.aac', '.mp3'];
 
+// Patterns for common streaming video platforms
+const STREAMING_PATTERNS = [
+  /youtube\.com\/watch/,
+  /youtu\.be\//,
+  /facebook\.com\/.*\/videos/,
+  /fb\.watch\//,
+  /instagram\.com\/p\//,
+  /instagram\.com\/reel\//,
+  /tiktok\.com\/@.*\/video/ 
+];
+
+// Function to check if a URL matches a streaming pattern
+function isStreamingUrl(url) {
+  return STREAMING_PATTERNS.some(pattern => pattern.test(url));
+}
+
+
 // Store found media URLs per tab using session storage (clears when browser closes)
 async function addMediaUrlForTab(tabId, url) {
   const key = `tab_${tabId}_media`;
   const data = await chrome.storage.session.get(key);
   const urls = data[key] || [];
-  if (!urls.includes(url)) {
-    urls.push(url);
+  
+  // Clean and deduplicate URL before adding
+  const cleanedUrl = cleanUrl(url);
+  if (!urls.includes(cleanedUrl)) {
+    urls.push(cleanedUrl);
     await chrome.storage.session.set({ [key]: urls });
     updateBadge(tabId, urls.length);
   }
@@ -30,6 +50,27 @@ function updateBadge(tabId, count) {
   chrome.action.setBadgeText({ tabId: tabId, text: text });
   chrome.action.setBadgeBackgroundColor({ color: '#9d4edd' });
 }
+
+// Function to clean URLs (remove tracking parameters)
+function cleanUrl(url) {
+    try {
+        const urlObj = new URL(url);
+        // Remove common tracking parameters
+        ['utm_source', 'utm_medium', 'fbclid', 'gclid', 'feature'].forEach(param => {
+            urlObj.searchParams.delete(param);
+        });
+        // Remove YouTube specific parameters that don't affect content
+        if (urlObj.hostname.includes('youtube.com') || urlObj.hostname.includes('youtu.be')) {
+            ['index', 'list', 't', 'start', 'end'].forEach(param => {
+                urlObj.searchParams.delete(param);
+            });
+        }
+        return urlObj.toString();
+    } catch {
+        return url; // Return original URL if it's not a valid URL
+    }
+}
+
 
 // Listen to network requests
 chrome.webRequest.onHeadersReceived.addListener(
@@ -63,6 +104,13 @@ chrome.webRequest.onHeadersReceived.addListener(
       }
     }
 
+    // 3. Check by streaming platform patterns
+    if (!isMedia) {
+        if (isStreamingUrl(url)) {
+            isMedia = true;
+        }
+    }
+
     if (isMedia) {
       addMediaUrlForTab(details.tabId, url);
     }
@@ -77,7 +125,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    // A navigation is considered complete when the status is 'complete' and it has a URL
+    // A navigation is considered complete when the status is 'loading' and it has a URL
     if (changeInfo.status === 'loading' && changeInfo.url) {
         chrome.storage.session.remove(`tab_${tabId}_media`);
         updateBadge(tabId, 0);
@@ -93,5 +141,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ urls: data[key] || [] });
     });
     return true; // Indicates that the response is sent asynchronously
+  } else if (request.type === 'is_streaming_url') { // NEW: Handle query for streaming URL check
+      sendResponse({ isStreaming: isStreamingUrl(request.url) });
+      return true;
   }
 });

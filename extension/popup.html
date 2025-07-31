@@ -15,107 +15,175 @@
             --text: #e0f7fa; /* Light text */
             --success: #00e676; /* Green for success */
             --error: #ff4081; /* Pink/Red for error */
+            --warning: #ffc107; /* Yellow for warning */
+            --border-glow: rgba(0, 245, 212, 0.5);
+            --button-glow: rgba(157, 78, 221, 0.4);
         }
         
         body {
-            font-family: 'Segoe UI', 'Roboto', sans-serif;
-            width: 350px; /* Fixed width for popup */
-            padding: 15px;
+            font-family: 'Inter', sans-serif; /* Changed to Inter for futuristic feel */
+            width: 380px; /* Slightly wider for better spacing */
+            padding: 20px; /* Adjusted padding for more consistent internal spacing */
             background: linear-gradient(135deg, var(--darker), var(--dark));
             color: var(--text);
+            overflow: hidden; /* Hide overflow from rotating background */
+            position: relative;
+            border-radius: 12px; /* Rounded corners for the whole popup */
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+            display: flex; /* Use flexbox for body to center content */
+            flex-direction: column;
+            align-items: center; /* Center horizontally */
+        }
+        
+        /* Animated background gradient - subtle for futuristic feel */
+        body::before {
+            content: "";
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at top left, var(--secondary) 0%, transparent 30%),
+                        radial-gradient(circle at bottom right, var(--primary) 0%, transparent 30%);
+            opacity: 0.1;
+            transform: rotate(45deg);
+            animation: backgroundRotate 60s linear infinite;
+            z-index: -1;
+        }
+
+        @keyframes backgroundRotate {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
 
         h1 { 
             color: var(--primary);
-            margin-bottom: 15px;
-            font-size: 1.2em;
+            margin-bottom: 25px;
+            font-size: 1.5em; /* Larger title */
             text-align: center;
             text-transform: uppercase;
-            letter-spacing: 1px;
-            font-weight: 700;
-            text-shadow: 0 0 10px rgba(0, 245, 212, 0.5);
+            letter-spacing: 2px;
+            font-weight: 800; /* Bolder */
+            text-shadow: 0 0 15px var(--border-glow); /* More prominent glow */
+            width: 100%; /* Ensure title takes full width to center correctly */
         }
         
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: var(--primary);
-            font-size: 0.9em;
+        #initialView, #formatsSection { /* NEW: Apply max-width to main content sections for consistent alignment */
+            width: 100%; /* Take full width of body's content area */
+            max-width: 340px; /* Set a consistent max-width for content elements */
+            margin: 0 auto; /* Center the content within the body */
         }
-        
+
         .input-group {
-            margin-bottom: 20px;
+            margin-bottom: 25px; /* More spacing */
+            width: 100%; /* Ensure input group takes full available width */
         }
         
-        select {
+        .input-field { /* Unified input field style */
             width: 100%;
-            padding: 12px;
-            margin-bottom: 5px;
-            border: 1px solid rgba(157, 78, 221, 0.3);
-            border-radius: 8px;
+            padding: 10px 14px; 
+            border: 2px solid rgba(157, 78, 221, 0.3);
+            border-radius: 10px; /* More rounded */
             background: var(--card);
             color: var(--text);
-            font-size: 0.9em;
-            transition: all 0.3s ease;
-        }
-        
-        select:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 0 2px rgba(0, 245, 212, 0.3);
-        }
-        
-        button {
-            background: linear-gradient(135deg, var(--secondary), var(--primary));
-            color: var(--dark);
-            padding: 12px 15px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
             font-size: 1em;
-            width: 100%;
-            margin-bottom: 10px;
+            transition: all 0.3s ease;
+            box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.3);
+            display: flex; /* For icon inside */
+            align-items: center;
+            box-sizing: border-box; /* IMPORTANT: Include padding and border in width calculation */
+        }
+        .input-field input {
+            flex-grow: 1;
+            background: transparent;
+            border: none;
+            color: var(--text);
+            font-size: 1em;
+            padding: 0;
+            margin-left: 10px; /* Space for icon */
+        }
+        .input-field input:focus {
+            outline: none;
+        }
+        .input-field:focus-within { /* Glow on focus */
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--border-glow);
+        }
+
+        .icon {
+            font-size: 1.2em;
+            color: var(--primary);
+        }
+        
+        .button { /* Unified button style */
+            background: linear-gradient(135deg, var(--secondary), var(--primary));
+            color: var(--darker); /* Darker text for contrast */
+            padding: 14px 20px;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 1.05em; /* Slightly larger font */
+            width: 100%; /* Ensure buttons take full available width */
+            margin-bottom: 15px; /* More spacing */
             transition: all 0.3s ease;
             font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            box-sizing: border-box; /* IMPORTANT: Include padding and border in width calculation */
         }
         
-        button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(0, 245, 212, 0.4);
+        .button:hover {
+            transform: translateY(-3px); /* More pronounced lift */
+            box-shadow: 0 8px 25px var(--button-glow); /* Stronger glow */
         }
         
-        button:disabled {
+        .button:disabled {
             background: #3a3d5a;
             cursor: not-allowed;
             transform: none;
             box-shadow: none;
+            opacity: 0.6;
         }
-        
+
+        .button.secondary { /* For back button */
+            background: #6c757d;
+            color: white;
+        }
+        .button.secondary:hover {
+            background: #5a6268;
+            box-shadow: none;
+            transform: none;
+        }
+
         .status-message {
-            margin-top: 15px;
-            padding: 12px;
-            border-radius: 8px;
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
             font-weight: 500;
-            font-size: 0.9em;
+            font-size: 0.95em;
             text-align: center;
             border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            width: 100%; /* Ensure status message takes full width */
+            box-sizing: border-box; /* Include padding/border in width */
         }
         
         .status-message.info { background: rgba(33, 150, 243, 0.15); color: #81d4fa; }
         .status-message.success { background: rgba(0, 230, 118, 0.15); color: var(--success); }
         .status-message.error { background: rgba(255, 64, 129, 0.15); color: var(--error); }
+        .status-message.warning { background: rgba(255, 193, 7, 0.15); color: var(--warning); }
         
         .hidden { display: none; }
         
         .loading-spinner {
-            border: 3px solid rgba(157, 78, 221, 0.2);
-            border-top: 3px solid var(--primary);
+            border: 4px solid rgba(157, 78, 221, 0.2);
+            border-top: 4px solid var(--primary);
             border-radius: 50%;
-            width: 25px;
-            height: 25px;
+            width: 30px;
+            height: 30px;
             animation: spin 1s linear infinite;
-            margin: 15px auto;
+            margin: 20px auto;
         }
         
         @keyframes spin {
@@ -125,56 +193,124 @@
 
         .media-type-group {
             display: flex;
-            gap: 15px;
-            margin-bottom: 15px;
+            justify-content: center; /* Center radio buttons */
+            gap: 25px;
+            margin-top: 15px;
+            margin-bottom: 25px;
+            width: 100%; /* Ensure it takes full width */
         }
         .media-type-group label {
             display: flex;
             align-items: center;
             cursor: pointer;
             font-weight: normal;
+            color: var(--text); /* Ensure text color is consistent */
+            font-size: 1em;
         }
         .media-type-group input[type="radio"] {
-            margin-right: 8px;
+            margin-right: 10px;
             accent-color: var(--primary);
+            width: 18px; /* Larger radio buttons */
+            height: 18px;
         }
         
-        #formatsSection { margin-top: 20px; }
-        #formatsContainer ul { list-style-type: none; padding: 0; max-height: 200px; overflow-y: auto; margin-bottom: 15px; }
-        #formatsContainer li { background: rgba(30, 35, 50, 0.7); margin-bottom: 8px; padding: 12px; border-radius: 6px; }
-        #formatsContainer li input[type="radio"] { margin-right: 12px; }
+        #formatsSection { margin-top: 30px; }
+        #formatsContainer ul { list-style-type: none; padding: 0; max-height: 250px; overflow-y: auto; margin-bottom: 20px; }
+        #formatsContainer li { 
+            background: rgba(30, 35, 50, 0.7); 
+            margin-bottom: 10px; 
+            padding: 15px; 
+            border-radius: 8px; 
+            border: 1px solid rgba(0, 245, 212, 0.1); /* Subtle border */
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        }
+        #formatsContainer li label {
+            display: flex;
+            align-items: flex-start; /* Align text to top if multi-line */
+            font-size: 0.95em;
+            color: var(--text);
+        }
+        #formatsContainer li input[type="radio"] { 
+            margin-right: 15px; 
+            margin-top: 2px; /* Adjust alignment */
+        }
         
-        .section-title { color: var(--primary); font-size: 1.1em; margin-bottom: 10px; }
-        .secondary-btn { background: #6c757d; }
+        .section-title { 
+            color: var(--primary); 
+            font-size: 1.2em; 
+            margin-bottom: 15px; 
+            text-align: center;
+            font-weight: 700;
+            letter-spacing: 1px;
+            width: 100%; /* Ensure title takes full width */
+        }
+
+        /* Styles for app connection status */
+        #appConnectionStatus {
+            margin-bottom: 15px; /* Increased spacing */
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 0.9em;
+            text-align: center;
+            font-weight: 600;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            width: 100%; /* Ensure it takes full width */
+            box-sizing: border-box; /* Include padding/border in width */
+        }
+        
+        #appConnectionStatus.connected {
+            background-color: rgba(0, 230, 118, 0.15);
+            color: var(--success);
+        }
+        #appConnectionStatus.disconnected {
+            background-color: rgba(255, 64, 129, 0.15);
+            color: var(--error);
+        }
+        
+        #retryConnectionBtn {
+            background: #4a90e2; /* A shade of blue */
+            color: white;
+            margin-top: 10px;
+            margin-bottom: 25px; /* More spacing */
+        }
+        #retryConnectionBtn:hover {
+            background: #357bd8;
+            box-shadow: 0 4px 15px rgba(74, 144, 226, 0.4);
+        }
+
+        /* Font Awesome Icons */
+        @import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css');
     </style>
 </head>
 <body>
     <h1>Universal Media Downloader</h1>
 
     <div id="initialView">
+        <div id="appConnectionStatus" class="hidden"></div>
+        <button id="retryConnectionBtn" class="button hidden">Retry Connection</button>
+
         <div class="input-group">
-            <label for="urlSelect">Detected Media URL</label>
-            <select id="urlSelect"></select>
+            <div class="input-field">
+                <i class="fas fa-link icon"></i> <!-- Link icon -->
+                <input type="url" id="urlInput" placeholder="Paste or detected URL here" />
+            </div>
             <div id="detectionStatus" class="status-message info hidden"></div>
         </div>
 
-        <div class="input-group">
-            <label>Media Type</label>
-            <div class="media-type-group">
-                <label>
-                    <input type="radio" name="mediaType" value="video" checked>
-                    Video
-                </label>
-                <label>
-                    <input type="radio" name="mediaType" value="audio">
-                    Audio
-                </label>
-            </div>
+        <div class="media-type-group">
+            <label>
+                <input type="radio" name="mediaType" value="video" checked>
+                Video
+            </label>
+            <label>
+                <input type="radio" name="mediaType" value="audio">
+                Audio
+            </label>
         </div>
 
         <div class="main-action-buttons">
-            <button id="downloadHighestQualityBtn">DOWNLOAD HIGHEST QUALITY</button>
-            <button id="getFormatsBtn">GET AVAILABLE FORMATS</button>
+            <button id="downloadHighestQualityBtn" class="button">Download Highest Quality</button>
+            <button id="getFormatsBtn" class="button secondary">Get Available Formats</button>
         </div>
     </div>
 
@@ -184,8 +320,8 @@
             <ul id="videoFormatsList"></ul>
             <ul id="audioFormatsList"></ul>
         </div>
-        <button id="startDownloadBtn">DOWNLOAD SELECTED FORMAT</button>
-        <button id="backToInitialViewBtn" class="secondary-btn">BACK</button>
+        <button id="startDownloadBtn" class="button">Download Selected Format</button>
+        <button id="backToInitialViewBtn" class="button secondary">Back</button>
     </div>
 
     <div id="loadingSpinner" class="loading-spinner hidden"></div>
