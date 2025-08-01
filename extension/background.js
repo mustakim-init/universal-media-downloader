@@ -17,8 +17,7 @@ const MEDIA_FILE_EXTENSIONS = ['.m3u8', '.ts', '.mp4', '.m4a', '.aac', '.mp3'];
 const STREAMING_PATTERNS = [
   /youtube\.com\/watch/,
   /youtu\.be\//,
-  /facebook\.com\/.*\/videos/,
-  /facebook\.com\/watch/,
+  /facebook\.com\/watch\?v=/,  // Only actual video watch pages
   /fb\.watch\//,
   /instagram\.com\/p\//,
   /instagram\.com\/reel\//,
@@ -261,7 +260,7 @@ async function getTabUrl(tabId) {
   }
 }
 
-// Listen to network requests - be VERY selective about what we consider media
+// Listen to network requests - IGNORE *.fbcdn.net URLs for Facebook
 chrome.webRequest.onHeadersReceived.addListener(
   async (details) => {
     if (details.tabId < 0) return;
@@ -272,30 +271,16 @@ chrome.webRequest.onHeadersReceived.addListener(
     // Get tab URL first for context
     const tabUrl = await getTabUrl(details.tabId);
     
-    // For Facebook, ONLY accept requests that look like real video streams
+    // For Facebook, COMPLETELY IGNORE *.fbcdn.net URLs - they are not playable
     if (tabUrl && (tabUrl.includes('facebook.com') || tabUrl.includes('fb.watch'))) {
-      // Must match playable patterns first
-      const matchesPlayable = FACEBOOK_PLAYABLE_PATTERNS.some(pattern => pattern.test(url));
-      if (!matchesPlayable) return; // Skip if it doesn't match playable patterns
+      // Skip ALL fbcdn.net URLs - they are never the playable video URLs
+      if (url.includes('fbcdn.net')) {
+        return; // Completely ignore these URLs
+      }
       
-      // Must have proper media extension
-      const hasMediaExt = MEDIA_FILE_EXTENSIONS.some(ext => url.toLowerCase().includes(ext));
-      if (!hasMediaExt) return;
-      
-      // Must pass content-type check OR be HLS
-      const contentTypeHeader = responseHeaders.find(
-        (header) => header.name.toLowerCase() === 'content-type'
-      );
-      
-      if (contentTypeHeader) {
-        const contentType = contentTypeHeader.value.toLowerCase();
-        const hasVideoContentType = MEDIA_CONTENT_TYPES.some(type => contentType.includes(type));
-        if (hasVideoContentType || url.includes('.m3u8')) {
-          isMedia = true;
-        }
-      } else if (url.includes('.m3u8') || url.includes('.mp4')) {
-        // Accept HLS or MP4 even without content-type header
-        isMedia = true;
+      // Only process the actual tab URL if it's a video watch page
+      if (url === tabUrl && /facebook\.com\/watch\?v=|fb\.watch\//.test(url)) {
+        isMedia = true; // The tab URL itself is the media URL for Facebook
       }
     }
     // For non-Facebook sites, use original logic

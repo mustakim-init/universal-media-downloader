@@ -1,10 +1,12 @@
-// popup.js - REDESIGNED UI & IMPROVED DETECTION
+// popup.js - REDESIGNED UI & IMPROVED DETECTION with Dropdown
 
 const FLASK_PORT = 5000;
 const FLASK_BASE_URL = `http://localhost:${FLASK_PORT}`;
 
 // Get DOM elements
-const urlInput = document.getElementById('urlInput'); // Now a single input for detected/manual
+const urlInput = document.getElementById('urlInput');
+const urlDropdown = document.getElementById('urlDropdown');
+const dropdownArrow = document.getElementById('dropdownArrow');
 const detectionStatus = document.getElementById('detectionStatus');
 const mediaTypeRadios = document.querySelectorAll('input[name="mediaType"]');
 const downloadHighestQualityBtn = document.getElementById('downloadHighestQualityBtn');
@@ -18,21 +20,22 @@ const formatsSection = document.getElementById('formatsSection');
 const videoFormatsList = document.getElementById('videoFormatsList');
 const audioFormatsList = document.getElementById('audioFormatsList');
 const appConnectionStatusDiv = document.getElementById('appConnectionStatus');
-const retryConnectionBtn = document.getElementById('retryConnectionBtn');
+const connectionText = document.getElementById('connectionText');
+const retryIcon = document.getElementById('retryIcon');
 
 let selectedFormatId = null;
 let currentTabId = null;
-let isAppConnected = false; // Track connection status
+let isAppConnected = false;
+let detectedUrls = [];
+let isDropdownOpen = false;
 
-// Function to clean URLs (remove tracking parameters) - moved here for consistency
+// Function to clean URLs (remove tracking parameters)
 function cleanUrl(url) {
     try {
         const urlObj = new URL(url);
-        // Remove common tracking parameters
         ['utm_source', 'utm_medium', 'fbclid', 'gclid', 'feature'].forEach(param => {
             urlObj.searchParams.delete(param);
         });
-        // Remove YouTube specific parameters that don't affect content
         if (urlObj.hostname.includes('youtube.com') || urlObj.hostname.includes('youtu.be')) {
             ['index', 'list', 't', 'start', 'end'].forEach(param => {
                 urlObj.searchParams.delete(param);
@@ -40,7 +43,7 @@ function cleanUrl(url) {
         }
         return urlObj.toString();
     } catch {
-        return url; // Return original URL if it's not a valid URL
+        return url;
     }
 }
 
@@ -49,7 +52,7 @@ function showStatus(message, type = 'info', timeout = 5000) {
     statusMessageDiv.textContent = message;
     statusMessageDiv.className = `status-message status-${type}`;
     statusMessageDiv.classList.remove('hidden');
-    if (timeout > 0) { // Only set timeout if > 0
+    if (timeout > 0) {
         setTimeout(() => {
             statusMessageDiv.classList.add('hidden');
         }, timeout);
@@ -61,7 +64,7 @@ function showLoading(show) {
 }
 
 function setUIState(isLoading, appConnected = isAppConnected) {
-    isAppConnected = appConnected; // Update global connection status
+    isAppConnected = appConnected;
     
     urlInput.disabled = isLoading;
     mediaTypeRadios.forEach(radio => radio.disabled = isLoading);
@@ -75,13 +78,13 @@ function setUIState(isLoading, appConnected = isAppConnected) {
 
     // Update app connection status display
     if (appConnected) {
-        appConnectionStatusDiv.textContent = "Desktop App Connected";
+        connectionText.textContent = "Desktop App Connected";
         appConnectionStatusDiv.className = "connected";
-        retryConnectionBtn.classList.add('hidden');
+        retryIcon.classList.add('hidden');
     } else {
-        appConnectionStatusDiv.textContent = "Desktop App Disconnected";
+        connectionText.textContent = "Desktop App Disconnected";
         appConnectionStatusDiv.className = "disconnected";
-        retryConnectionBtn.classList.remove('hidden');
+        retryIcon.classList.remove('hidden');
     }
     appConnectionStatusDiv.classList.remove('hidden');
 }
@@ -101,6 +104,68 @@ function showFormatsView() {
     setUIState(false);
 }
 
+// --- Dropdown Functions ---
+function toggleDropdown() {
+    isDropdownOpen = !isDropdownOpen;
+    urlDropdown.classList.toggle('hidden', !isDropdownOpen);
+    dropdownArrow.classList.toggle('open', isDropdownOpen);
+    
+    if (isDropdownOpen) {
+        populateDropdown();
+    }
+}
+
+function closeDropdown() {
+    isDropdownOpen = false;
+    urlDropdown.classList.add('hidden');
+    dropdownArrow.classList.remove('open');
+}
+
+function populateDropdown() {
+    urlDropdown.innerHTML = '';
+    
+    // Add manual entry option
+    const manualOption = document.createElement('div');
+    manualOption.className = 'url-option manual-entry';
+    manualOption.textContent = '✏️ Manual Entry (clear field)';
+    manualOption.addEventListener('click', () => {
+        urlInput.value = '';
+        urlInput.focus();
+        closeDropdown();
+        setUIState(false);
+    });
+    urlDropdown.appendChild(manualOption);
+    
+    // Add detected URLs
+    if (detectedUrls.length > 0) {
+        detectedUrls.forEach((url, index) => {
+            const option = document.createElement('div');
+            option.className = 'url-option';
+            
+            // Truncate long URLs for display
+            let displayUrl = url;
+            if (url.length > 60) {
+                displayUrl = url.substring(0, 30) + '...' + url.substring(url.length - 27);
+            }
+            
+            option.textContent = `📺 ${displayUrl}`;
+            option.title = url; // Full URL on hover
+            option.addEventListener('click', () => {
+                urlInput.value = url;
+                closeDropdown();
+                setUIState(false);
+            });
+            urlDropdown.appendChild(option);
+        });
+    } else {
+        const noUrlsOption = document.createElement('div');
+        noUrlsOption.className = 'url-option';
+        noUrlsOption.style.opacity = '0.6';
+        noUrlsOption.textContent = 'No URLs detected on this page';
+        urlDropdown.appendChild(noUrlsOption);
+    }
+}
+
 // Function to get the current tab's info
 async function getCurrentTab() {
     return new Promise((resolve) => {
@@ -116,7 +181,7 @@ async function getCurrentTab() {
 
 // Function to check desktop app connection with multiple endpoints
 async function checkAppConnection() {
-    const endpoints = ['/health', '/status', '/ping']; // Try common endpoints
+    const endpoints = ['/health', '/status', '/ping'];
     
     for (const endpoint of endpoints) {
         try {
@@ -130,12 +195,10 @@ async function checkAppConnection() {
                     const data = await response.json();
                     return data.status === 'healthy' || data.status === 'ok' || data.status === 'success';
                 } catch {
-                    // If JSON parsing fails but response is ok, consider it connected
                     return true;
                 }
             }
         } catch (error) {
-            // console.warn(`Connection check failed for ${endpoint}:`, error); // Too verbose for console
             continue;
         }
     }
@@ -164,30 +227,44 @@ function setupFormatSelection() {
 
 // --- Event Handlers ---
 
-// Unified URL input handling
+// Dropdown arrow click
+dropdownArrow.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleDropdown();
+});
+
+// Close dropdown when clicking outside
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.input-group') && isDropdownOpen) {
+        closeDropdown();
+    }
+});
+
+// URL input handling
 urlInput.addEventListener('input', () => {
-    // Clear status and re-evaluate buttons when user types
     statusMessageDiv.classList.add('hidden');
     setUIState(false);
+    if (isDropdownOpen) {
+        closeDropdown();
+    }
 });
 
 urlInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
-        // When Enter is pressed in the URL input, act as if 'Get Formats' was clicked
         getFormatsBtn.click();
     }
 });
 
-retryConnectionBtn.addEventListener('click', async () => {
+// Retry icon click
+retryIcon.addEventListener('click', async () => {
     showLoading(true);
-    setUIState(true, false); // Show disconnected state while retrying
-    showStatus('Retrying connection to desktop app...', 'info', 0); // Don't auto-hide
-    await initializePopup(); // Re-run the main initialization logic
+    setUIState(true, false);
+    showStatus('Retrying connection to desktop app...', 'info', 0);
+    await initializePopup();
 });
 
-
 getFormatsBtn.addEventListener('click', async () => {
-    const url = urlInput.value.trim(); // Get URL from the single input field
+    const url = urlInput.value.trim();
     if (!url) {
         showStatus('Please enter or select a media URL.', 'error');
         return;
@@ -242,7 +319,7 @@ getFormatsBtn.addEventListener('click', async () => {
         }
     } catch (error) {
         showStatus('Could not connect to desktop app. Please check if it\'s running and try again.', 'error');
-        setUIState(false, false); // Mark app as disconnected
+        setUIState(false, false);
         showInitialView();
     } finally {
         showLoading(false);
@@ -251,7 +328,7 @@ getFormatsBtn.addEventListener('click', async () => {
 });
 
 downloadHighestQualityBtn.addEventListener('click', async () => {
-    const url = urlInput.value.trim(); // Get URL from the single input field
+    const url = urlInput.value.trim();
     if (!url) {
         showStatus('Please enter or select a media URL.', 'error');
         return;
@@ -285,7 +362,7 @@ downloadHighestQualityBtn.addEventListener('click', async () => {
         }
     } catch (error) {
         showStatus('Could not connect to desktop app. Please check if it\'s running and try again.', 'error');
-        setUIState(false, false); // Mark app as disconnected
+        setUIState(false, false);
     } finally {
         showLoading(false);
         setUIState(false);
@@ -293,7 +370,7 @@ downloadHighestQualityBtn.addEventListener('click', async () => {
 });
 
 startDownloadBtn.addEventListener('click', async () => {
-    const url = urlInput.value.trim(); // Get URL from the single input field
+    const url = urlInput.value.trim();
     if (!url) {
         showStatus('URL has been lost. Please go back and enter it again.', 'error');
         return;
@@ -328,7 +405,7 @@ startDownloadBtn.addEventListener('click', async () => {
         }
     } catch (error) {
         showStatus('Could not connect to desktop app. Please check if it\'s running and try again.', 'error');
-        setUIState(false, false); // Mark app as disconnected
+        setUIState(false, false);
     } finally {
         showLoading(false);
         setUIState(false);
@@ -337,17 +414,18 @@ startDownloadBtn.addEventListener('click', async () => {
 
 backToInitialViewBtn.addEventListener('click', showInitialView);
 
-// Main initialization function to be called on DOMContentLoaded and by retry button
+// Main initialization function
 async function initializePopup() {
     showLoading(true);
-    setUIState(true, false); // Start with UI disabled and app disconnected
+    setUIState(true, false);
 
     const appConnected = await checkAppConnection();
-    setUIState(false, appConnected); // Update UI based on actual connection status
+    setUIState(false, appConnected);
 
     if (!appConnected) {
-        showStatus('Desktop application is not running. Please start the desktop app to use this extension.', 'error', 0); // Don't auto-hide
-        urlInput.value = ''; // Clear input
+        showStatus('Desktop application is not running. Please start the desktop app to use this extension.', 'error', 0);
+        urlInput.value = '';
+        detectedUrls = [];
         detectionStatus.textContent = "Cannot detect URLs. Desktop app is not running.";
         detectionStatus.classList.remove('hidden');
         showLoading(false);
@@ -359,16 +437,16 @@ async function initializePopup() {
         detectionStatus.textContent = "Could not get current tab info.";
         detectionStatus.classList.remove('hidden');
         showLoading(false);
-        setUIState(true, appConnected); // Keep buttons disabled if no tab info
+        setUIState(true, appConnected);
         return;
     }
     currentTabId = currentTab.id;
 
-    // FIX: Fetch detected URLs AND check current tab URL sequentially
+    // Fetch detected URLs and check current tab URL
     chrome.runtime.sendMessage({ type: 'get_media_urls', tabId: currentTab.id }, async (response) => {
-        let detectedUrls = response.urls || [];
+        detectedUrls = response.urls || [];
         
-        // Explicitly check and add current tab URL if it's a streaming URL
+        // For Facebook, also add the current tab URL if it's a video watch page
         const currentTabUrlCleaned = cleanUrl(currentTab.url);
         if (isValidUrl(currentTabUrlCleaned)) {
             const isCurrentTabStreaming = await new Promise(resolve => {
@@ -378,22 +456,22 @@ async function initializePopup() {
             });
 
             if (isCurrentTabStreaming && !detectedUrls.includes(currentTabUrlCleaned)) {
-                detectedUrls.unshift(currentTabUrlCleaned); // Add to the beginning
+                detectedUrls.unshift(currentTabUrlCleaned);
             }
         }
 
-        // Populate the single urlInput field
+        // Set default URL and update status
         if (detectedUrls.length > 0) {
-            urlInput.value = detectedUrls[0]; // Set the first detected URL as the default
+            urlInput.value = detectedUrls[0];
             detectionStatus.classList.add('hidden');
         } else {
-            urlInput.value = ''; // Clear input if no URLs detected
-            detectionStatus.textContent = "No media streams detected on this page. Paste a URL above.";
+            urlInput.value = '';
+            detectionStatus.textContent = "No media streams detected on this page. Click the dropdown to manually enter a URL.";
             detectionStatus.classList.remove('hidden');
         }
 
         showLoading(false);
-        setUIState(false, appConnected); // Enable UI based on app connection and URL presence
+        setUIState(false, appConnected);
     });
 }
 

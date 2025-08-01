@@ -21,21 +21,21 @@
         }
         
         body {
-            font-family: 'Inter', sans-serif; /* Changed to Inter for futuristic feel */
-            width: 380px; /* Slightly wider for better spacing */
-            padding: 20px; /* Adjusted padding for more consistent internal spacing */
+            font-family: 'Inter', sans-serif;
+            width: 380px;
+            padding: 20px;
             background: linear-gradient(135deg, var(--darker), var(--dark));
             color: var(--text);
-            overflow: hidden; /* Hide overflow from rotating background */
+            overflow: hidden;
             position: relative;
-            border-radius: 12px; /* Rounded corners for the whole popup */
+            border-radius: 12px;
             box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
-            display: flex; /* Use flexbox for body to center content */
+            display: flex;
             flex-direction: column;
-            align-items: center; /* Center horizontally */
+            align-items: center;
         }
         
-        /* Animated background gradient - subtle for futuristic feel */
+        /* Animated background gradient */
         body::before {
             content: "";
             position: absolute;
@@ -59,40 +59,43 @@
         h1 { 
             color: var(--primary);
             margin-bottom: 25px;
-            font-size: 1.5em; /* Larger title */
+            font-size: 1.5em;
             text-align: center;
             text-transform: uppercase;
             letter-spacing: 2px;
-            font-weight: 800; /* Bolder */
-            text-shadow: 0 0 15px var(--border-glow); /* More prominent glow */
-            width: 100%; /* Ensure title takes full width to center correctly */
+            font-weight: 800;
+            text-shadow: 0 0 15px var(--border-glow);
+            width: 100%;
         }
         
-        #initialView, #formatsSection { /* NEW: Apply max-width to main content sections for consistent alignment */
-            width: 100%; /* Take full width of body's content area */
-            max-width: 340px; /* Set a consistent max-width for content elements */
-            margin: 0 auto; /* Center the content within the body */
+        #initialView, #formatsSection {
+            width: 100%;
+            max-width: 340px;
+            margin: 0 auto;
         }
 
         .input-group {
-            margin-bottom: 25px; /* More spacing */
-            width: 100%; /* Ensure input group takes full available width */
+            margin-bottom: 25px;
+            width: 100%;
+            position: relative;
         }
         
-        .input-field { /* Unified input field style */
+        .input-field {
             width: 100%;
-            padding: 10px 14px; 
+            padding: 10px 40px 10px 14px; /* Extra padding on right for dropdown arrow */
             border: 2px solid rgba(157, 78, 221, 0.3);
-            border-radius: 10px; /* More rounded */
+            border-radius: 10px;
             background: var(--card);
             color: var(--text);
             font-size: 1em;
             transition: all 0.3s ease;
             box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.3);
-            display: flex; /* For icon inside */
+            display: flex;
             align-items: center;
-            box-sizing: border-box; /* IMPORTANT: Include padding and border in width calculation */
+            box-sizing: border-box;
+            position: relative;
         }
+        
         .input-field input {
             flex-grow: 1;
             background: transparent;
@@ -100,12 +103,14 @@
             color: var(--text);
             font-size: 1em;
             padding: 0;
-            margin-left: 10px; /* Space for icon */
+            margin-left: 10px;
         }
+        
         .input-field input:focus {
             outline: none;
         }
-        .input-field:focus-within { /* Glow on focus */
+        
+        .input-field:focus-within {
             border-color: var(--primary);
             box-shadow: 0 0 0 3px var(--border-glow);
         }
@@ -114,28 +119,82 @@
             font-size: 1.2em;
             color: var(--primary);
         }
+
+        /* Dropdown arrow */
+        .dropdown-arrow {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--primary);
+            cursor: pointer;
+            font-size: 1em;
+            transition: transform 0.3s ease;
+        }
         
-        .button { /* Unified button style */
+        .dropdown-arrow.open {
+            transform: translateY(-50%) rotate(180deg);
+        }
+
+        /* Dropdown menu */
+        .url-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: var(--card);
+            border: 2px solid rgba(157, 78, 221, 0.3);
+            border-top: none;
+            border-radius: 0 0 10px 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 1000;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .url-option {
+            padding: 12px 14px;
+            cursor: pointer;
+            border-bottom: 1px solid rgba(157, 78, 221, 0.1);
+            font-size: 0.9em;
+            word-break: break-all;
+            transition: background-color 0.2s ease;
+        }
+
+        .url-option:hover {
+            background-color: rgba(157, 78, 221, 0.2);
+        }
+
+        .url-option:last-child {
+            border-bottom: none;
+        }
+
+        .url-option.manual-entry {
+            color: var(--primary);
+            font-style: italic;
+        }
+        
+        .button {
             background: linear-gradient(135deg, var(--secondary), var(--primary));
-            color: var(--darker); /* Darker text for contrast */
+            color: var(--darker);
             padding: 14px 20px;
             border: none;
             border-radius: 10px;
             cursor: pointer;
-            font-size: 1.05em; /* Slightly larger font */
-            width: 100%; /* Ensure buttons take full available width */
-            margin-bottom: 15px; /* More spacing */
+            font-size: 1.05em;
+            width: 100%;
+            margin-bottom: 15px;
             transition: all 0.3s ease;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
-            box-sizing: border-box; /* IMPORTANT: Include padding and border in width calculation */
+            box-sizing: border-box;
         }
         
         .button:hover {
-            transform: translateY(-3px); /* More pronounced lift */
-            box-shadow: 0 8px 25px var(--button-glow); /* Stronger glow */
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px var(--button-glow);
         }
         
         .button:disabled {
@@ -146,7 +205,7 @@
             opacity: 0.6;
         }
 
-        .button.secondary { /* For back button */
+        .button.secondary {
             background: #6c757d;
             color: white;
         }
@@ -165,8 +224,8 @@
             text-align: center;
             border: 1px solid rgba(255, 255, 255, 0.1);
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-            width: 100%; /* Ensure status message takes full width */
-            box-sizing: border-box; /* Include padding/border in width */
+            width: 100%;
+            box-sizing: border-box;
         }
         
         .status-message.info { background: rgba(33, 150, 243, 0.15); color: #81d4fa; }
@@ -193,24 +252,24 @@
 
         .media-type-group {
             display: flex;
-            justify-content: center; /* Center radio buttons */
+            justify-content: center;
             gap: 25px;
             margin-top: 15px;
             margin-bottom: 25px;
-            width: 100%; /* Ensure it takes full width */
+            width: 100%;
         }
         .media-type-group label {
             display: flex;
             align-items: center;
             cursor: pointer;
             font-weight: normal;
-            color: var(--text); /* Ensure text color is consistent */
+            color: var(--text);
             font-size: 1em;
         }
         .media-type-group input[type="radio"] {
             margin-right: 10px;
             accent-color: var(--primary);
-            width: 18px; /* Larger radio buttons */
+            width: 18px;
             height: 18px;
         }
         
@@ -221,18 +280,18 @@
             margin-bottom: 10px; 
             padding: 15px; 
             border-radius: 8px; 
-            border: 1px solid rgba(0, 245, 212, 0.1); /* Subtle border */
+            border: 1px solid rgba(0, 245, 212, 0.1);
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
         }
         #formatsContainer li label {
             display: flex;
-            align-items: flex-start; /* Align text to top if multi-line */
+            align-items: flex-start;
             font-size: 0.95em;
             color: var(--text);
         }
         #formatsContainer li input[type="radio"] { 
             margin-right: 15px; 
-            margin-top: 2px; /* Adjust alignment */
+            margin-top: 2px;
         }
         
         .section-title { 
@@ -242,20 +301,24 @@
             text-align: center;
             font-weight: 700;
             letter-spacing: 1px;
-            width: 100%; /* Ensure title takes full width */
+            width: 100%;
         }
 
-        /* Styles for app connection status */
+        /* App connection status with inline retry icon */
         #appConnectionStatus {
-            margin-bottom: 15px; /* Increased spacing */
+            margin-bottom: 15px;
             padding: 10px;
             border-radius: 8px;
             font-size: 0.9em;
             text-align: center;
             font-weight: 600;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-            width: 100%; /* Ensure it takes full width */
-            box-sizing: border-box; /* Include padding/border in width */
+            width: 100%;
+            box-sizing: border-box;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
         }
         
         #appConnectionStatus.connected {
@@ -267,15 +330,16 @@
             color: var(--error);
         }
         
-        #retryConnectionBtn {
-            background: #4a90e2; /* A shade of blue */
-            color: white;
-            margin-top: 10px;
-            margin-bottom: 25px; /* More spacing */
+        .retry-icon {
+            cursor: pointer;
+            font-size: 1.1em;
+            transition: transform 0.3s ease;
+            opacity: 0.8;
         }
-        #retryConnectionBtn:hover {
-            background: #357bd8;
-            box-shadow: 0 4px 15px rgba(74, 144, 226, 0.4);
+        
+        .retry-icon:hover {
+            transform: rotate(180deg);
+            opacity: 1;
         }
 
         /* Font Awesome Icons */
@@ -286,14 +350,18 @@
     <h1>Universal Media Downloader</h1>
 
     <div id="initialView">
-        <div id="appConnectionStatus" class="hidden"></div>
-        <button id="retryConnectionBtn" class="button hidden">Retry Connection</button>
+        <div id="appConnectionStatus" class="hidden">
+            <span id="connectionText">Desktop App Connected</span>
+            <i id="retryIcon" class="fas fa-refresh retry-icon hidden" title="Retry Connection"></i>
+        </div>
 
         <div class="input-group">
             <div class="input-field">
-                <i class="fas fa-link icon"></i> <!-- Link icon -->
-                <input type="url" id="urlInput" placeholder="Paste or detected URL here" />
+                <i class="fas fa-link icon"></i>
+                <input type="url" id="urlInput" placeholder="Paste or select detected URL" />
+                <i class="fas fa-chevron-down dropdown-arrow" id="dropdownArrow"></i>
             </div>
+            <div id="urlDropdown" class="url-dropdown hidden"></div>
             <div id="detectionStatus" class="status-message info hidden"></div>
         </div>
 
