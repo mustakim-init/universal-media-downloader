@@ -1,4 +1,4 @@
-// IMPROVED background.js - Better Facebook media detection
+// HIGHLY RESTRICTIVE background.js - Only detect ACTUALLY PLAYABLE Facebook media
 
 // List of media content types and extensions to look for.
 const MEDIA_CONTENT_TYPES = [
@@ -18,13 +18,14 @@ const STREAMING_PATTERNS = [
   /youtube\.com\/watch/,
   /youtu\.be\//,
   /facebook\.com\/.*\/videos/,
+  /facebook\.com\/watch/,
   /fb\.watch\//,
   /instagram\.com\/p\//,
   /instagram\.com\/reel\//,
   /tiktok\.com\/@.*\/video/
 ];
 
-// IMPROVED: More comprehensive ignore patterns for Facebook
+// COMPREHENSIVE ignore patterns - be very aggressive about filtering out non-playable content
 const IGNORE_PATTERNS = [
   /thumb/i,
   /preview/i,
@@ -40,66 +41,83 @@ const IGNORE_PATTERNS = [
   /\.jpeg(\?|$)/i,
   /\.gif(\?|$)/i,
   /\.webp(\?|$)/i,
-  // Facebook specific ignore patterns
-  /facebook\.com.*static_map/i,
+  // Facebook specific ignore patterns - VERY RESTRICTIVE
   /facebook\.com.*rsrc\.php/i,
   /fbcdn\.net.*\.jpg/i,
   /fbcdn\.net.*\.png/i,
   /fbcdn\.net.*\.gif/i,
   /fbcdn\.net.*\.webp/i,
-  /fbstatic-a\.akamaihd\.net/i,
+  /fbstatic/i,
   /static\.xx\.fbcdn\.net/i,
   /graph\.facebook\.com/i,
-  // Generic image/static content patterns
+  /connect\.facebook\.net/i,
   /\/images?\//i,
   /\/img\//i,
   /\/static\//i,
-  /\/assets?\//i
+  /\/assets?\//i,
+  // Size and quality indicators that suggest thumbnails
+  /s\d+x\d+/i,
+  /\d+x\d+.*\.jpg/i,
+  /\d+x\d+.*\.png/i,
+  /small/i,
+  /medium/i,
+  /tiny/i,
+  // Facebook specific non-video patterns
+  /p\d+x\d+/i,
+  /safe_image\.php/i,
+  /external\.php/i
 ];
 
-// NEW: Facebook specific validation patterns
-const FACEBOOK_VALID_PATTERNS = [
-  // Facebook video URLs that are likely playable
-  /facebook\.com\/.*\/videos\/\d+/,
-  /fb\.watch\/[a-zA-Z0-9]+/,
-  // Direct video file patterns
-  /video-.*\.fbcdn\.net.*\.mp4/i,
-  /scontent.*\.fbcdn\.net.*\.mp4/i,
-  // HLS streams
-  /.*\.fbcdn\.net.*\.m3u8/i
+// VERY STRICT Facebook video URL patterns - only these will be considered valid
+const FACEBOOK_PLAYABLE_PATTERNS = [
+  // Direct HLS streams (most reliable for Facebook)
+  /video-.*\.fbcdn\.net.*\.m3u8/i,
+  /scontent.*\.fbcdn\.net.*\.m3u8/i,
+  
+  // High-quality direct MP4 files (very specific patterns)
+  /video-[a-z0-9-]+\.fbcdn\.net.*\.mp4.*(?:hd|720|1080|high)/i,
+  /scontent-[a-z0-9-]+\.xx\.fbcdn\.net.*\.mp4.*(?!.*thumb).*$/i,
+  
+  // Facebook's progressive download URLs (less common but valid)
+  /fbcdn\.net.*\/v\/.*\.mp4/i
 ];
 
-// NEW: Function to validate Facebook URLs more strictly
+// FACEBOOK-SPECIFIC: Only accept URLs that match very strict criteria
 function isValidFacebookMediaUrl(url, tabUrl) {
-  // If not a Facebook context, don't apply Facebook-specific rules
+  // If not Facebook context, don't apply these strict rules
   if (!tabUrl || (!tabUrl.includes('facebook.com') && !tabUrl.includes('fb.watch'))) {
     return true;
   }
 
-  // Check if URL matches any valid Facebook media patterns
-  const isValidPattern = FACEBOOK_VALID_PATTERNS.some(pattern => pattern.test(url));
-  
-  if (!isValidPattern) {
+  // FIRST: Must match at least one playable pattern
+  const matchesPlayablePattern = FACEBOOK_PLAYABLE_PATTERNS.some(pattern => pattern.test(url));
+  if (!matchesPlayablePattern) {
     return false;
   }
 
-  // Additional size-based filtering for Facebook
+  // SECOND: Additional strict checks
   if (url.includes('facebook.com') || url.includes('fbcdn.net')) {
-    // Reject very short URLs (usually thumbnails or metadata)
-    if (url.length < 80) return false;
+    // Must be reasonably long (short URLs are usually thumbnails)
+    if (url.length < 120) return false;
     
-    // Reject URLs with typical thumbnail indicators
-    if (/s\d+x\d+/i.test(url)) return false; // Size indicators like s320x240
-    if (/\d+x\d+/i.test(url) && url.length < 150) return false; // Dimension patterns in short URLs
+    // Must NOT contain any thumbnail indicators
+    if (/thumb|preview|small|tiny|safe_image/i.test(url)) return false;
     
-    // Look for quality indicators that suggest actual video content
-    const hasQualityIndicators = /(?:hd|720p|1080p|_hq|high)/i.test(url);
-    const hasVideoFormat = /\.mp4/i.test(url);
-    const isHLS = /\.m3u8/i.test(url);
+    // For MP4 files, must have quality indicators OR be from video subdomain
+    if (url.includes('.mp4')) {
+      const hasQualityIndicator = /(?:hd|720|1080|high|_hq)/i.test(url);
+      const isVideoSubdomain = /video-.*\.fbcdn\.net/i.test(url);
+      const isLongEnoughForReal = url.length > 150; // Real video URLs tend to be longer
+      
+      if (!hasQualityIndicator && !isVideoSubdomain && !isLongEnoughForReal) {
+        return false;
+      }
+    }
     
-    // For Facebook, be more strict - require either quality indicators, proper format, or HLS
-    if (!hasQualityIndicators && !hasVideoFormat && !isHLS) {
-      return false;
+    // For HLS streams, must be from proper video domains
+    if (url.includes('.m3u8')) {
+      const isFromVideoDomain = /(?:video-.*\.fbcdn\.net|scontent.*\.fbcdn\.net)/i.test(url);
+      if (!isFromVideoDomain) return false;
     }
   }
 
@@ -116,122 +134,89 @@ function isStreamingUrl(url) {
   return STREAMING_PATTERNS.some(pattern => pattern.test(url));
 }
 
-// IMPROVED: Enhanced function to filter relevant media URLs
+// VERY RESTRICTIVE: Only accept URLs that pass ALL checks
 function isRelevantMediaUrl(url, tabUrl) {
-  // First check basic ignore patterns
+  // Basic ignore patterns - if it matches any, reject immediately
   if (shouldIgnoreUrl(url)) {
     return false;
   }
   
-  // Apply Facebook-specific validation
+  // Facebook-specific validation - MUST pass this for Facebook URLs
   if (!isValidFacebookMediaUrl(url, tabUrl)) {
     return false;
   }
   
-  // For streaming platforms, be more selective
+  // For streaming platforms, apply additional restrictions
   if (tabUrl && isStreamingUrl(tabUrl)) {
-    // Only allow high-quality video formats and streaming manifests
     const hasGoodExtension = MEDIA_FILE_EXTENSIONS.some(ext => 
       url.toLowerCase().includes(ext)
     );
     
-    // Facebook specific additional filtering
+    if (!hasGoodExtension) return false;
+    
+    // Facebook gets EXTRA strict treatment
     if (tabUrl.includes('facebook.com') || tabUrl.includes('fb.watch')) {
-      if (!hasGoodExtension) return false;
+      // Must be a very long URL (real video URLs are complex)
+      if (url.length < 150) return false;
       
-      // Require minimum URL length for Facebook
-      if (url.length < 100) return false;
+      // Must contain specific video-related domains or patterns
+      const hasValidDomain = /(?:video-.*\.fbcdn\.net|scontent-.*\.xx\.fbcdn\.net)/i.test(url);
+      const hasHLS = url.includes('.m3u8');
+      const hasHighQualityMP4 = url.includes('.mp4') && /(?:hd|720|1080|high)/i.test(url);
       
-      // Must not contain obvious thumbnail indicators
-      if (/thumb|preview|small|tiny/i.test(url)) return false;
+      if (!hasValidDomain && !hasHLS && !hasHighQualityMP4) {
+        return false;
+      }
       
-      // Should contain video-related domains for Facebook
-      const hasFacebookVideoDomain = /video.*\.fbcdn\.net|scontent.*\.fbcdn\.net.*\.mp4/i.test(url);
-      if (!hasFacebookVideoDomain && !url.includes('.m3u8')) {
+      // Final check: must not contain any suspicious patterns
+      if (/(?:thumb|preview|small|medium|tiny|safe_image|s\d+x\d+|p\d+x\d+)/i.test(url)) {
         return false;
       }
     }
     
-    return hasGoodExtension;
+    return true;
   }
   
   return true; // Allow all media for non-streaming sites
 }
 
-// NEW: Function to check if media is likely active/playing
-async function isMediaLikelyActive(url, tabId) {
-  // Check if there are active media elements in the tab
-  try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tabId },
-      func: () => {
-        const videos = document.querySelectorAll('video');
-        const audios = document.querySelectorAll('audio');
-        
-        // Check for playing media
-        const playingMedia = [...videos, ...audios].filter(media => 
-          !media.paused && media.currentTime > 0 && media.readyState > 2
-        );
-        
-        return {
-          hasActiveVideo: videos.length > 0 && [...videos].some(v => !v.paused),
-          hasActiveAudio: audios.length > 0 && [...audios].some(a => !a.paused),
-          totalMedia: videos.length + audios.length,
-          playingCount: playingMedia.length
-        };
-      }
-    });
-    
-    if (results && results[0] && results[0].result) {
-      const mediaInfo = results[0].result;
-      return mediaInfo.hasActiveVideo || mediaInfo.hasActiveAudio || mediaInfo.playingCount > 0;
-    }
-  } catch (error) {
-    // If we can't check, assume it might be active
-    return true;
-  }
-  
-  return true;
-}
-
-// Store found media URLs per tab using session storage (clears when browser closes)
+// Store found media URLs per tab - VERY LIMITED for Facebook
 async function addMediaUrlForTab(tabId, url, tabUrl = null) {
-  // Check if this URL is relevant before adding
+  // Must pass relevance check
   if (!isRelevantMediaUrl(url, tabUrl)) {
-    return; // Don't add irrelevant URLs
+    return;
   }
   
   const key = `tab_${tabId}_media`;
   const data = await chrome.storage.session.get(key);
   let urls = data[key] || [];
   
-  // Clean and deduplicate URL before adding
+  // Clean URL
   const cleanedUrl = cleanUrl(url);
   
-  // For Facebook, do additional active media check
+  // For Facebook, be EXTREMELY restrictive - only 1 URL maximum
   if (tabUrl && (tabUrl.includes('facebook.com') || tabUrl.includes('fb.watch'))) {
-    const isLikelyActive = await isMediaLikelyActive(cleanedUrl, tabId);
-    if (!isLikelyActive && urls.length > 0) {
-      // If media doesn't seem active and we already have URLs, skip this one
-      return;
-    }
-  }
-  
-  // For streaming platforms, limit to maximum 2 URLs to prevent spam
-  if (tabUrl && isStreamingUrl(tabUrl)) {
     if (!urls.includes(cleanedUrl)) {
-      urls.unshift(cleanedUrl); // Add to beginning
-      
-      // Keep only the 2 most recent URLs for streaming platforms
-      if (urls.length > 2) {
-        urls = urls.slice(0, 2);
-      }
+      // For Facebook, only keep the MOST RECENT and LONGEST URL (most likely to be the real video)
+      urls = [cleanedUrl]; // Replace everything with just this URL
       
       await chrome.storage.session.set({ [key]: urls });
       updateBadge(tabId, urls.length);
     }
-  } else {
-    // For non-streaming sites, keep the original logic
+  } 
+  // For other streaming platforms, limit to 2 URLs
+  else if (tabUrl && isStreamingUrl(tabUrl)) {
+    if (!urls.includes(cleanedUrl)) {
+      urls.unshift(cleanedUrl);
+      if (urls.length > 2) {
+        urls = urls.slice(0, 2);
+      }
+      await chrome.storage.session.set({ [key]: urls });
+      updateBadge(tabId, urls.length);
+    }
+  } 
+  // For non-streaming sites, keep original logic
+  else {
     if (!urls.includes(cleanedUrl)) {
       urls.push(cleanedUrl);
       await chrome.storage.session.set({ [key]: urls });
@@ -262,7 +247,7 @@ function cleanUrl(url) {
         }
         return urlObj.toString();
     } catch {
-        return url; // Return original URL if it's not a valid URL
+        return url;
     }
 }
 
@@ -276,54 +261,81 @@ async function getTabUrl(tabId) {
   }
 }
 
-// Listen to network requests
+// Listen to network requests - be VERY selective about what we consider media
 chrome.webRequest.onHeadersReceived.addListener(
   async (details) => {
-    if (details.tabId < 0) return; // Ignore requests not associated with a tab
+    if (details.tabId < 0) return;
 
     const { url, responseHeaders } = details;
     let isMedia = false;
 
-    // 1. Check by file extension
-    for (const ext of MEDIA_FILE_EXTENSIONS) {
-      if (url.toLowerCase().includes(ext)) {
-        isMedia = true;
-        break;
-      }
-    }
-
-    // 2. Check by Content-Type header (more reliable)
-    if (!isMedia) {
+    // Get tab URL first for context
+    const tabUrl = await getTabUrl(details.tabId);
+    
+    // For Facebook, ONLY accept requests that look like real video streams
+    if (tabUrl && (tabUrl.includes('facebook.com') || tabUrl.includes('fb.watch'))) {
+      // Must match playable patterns first
+      const matchesPlayable = FACEBOOK_PLAYABLE_PATTERNS.some(pattern => pattern.test(url));
+      if (!matchesPlayable) return; // Skip if it doesn't match playable patterns
+      
+      // Must have proper media extension
+      const hasMediaExt = MEDIA_FILE_EXTENSIONS.some(ext => url.toLowerCase().includes(ext));
+      if (!hasMediaExt) return;
+      
+      // Must pass content-type check OR be HLS
       const contentTypeHeader = responseHeaders.find(
         (header) => header.name.toLowerCase() === 'content-type'
       );
+      
       if (contentTypeHeader) {
         const contentType = contentTypeHeader.value.toLowerCase();
-        for (const type of MEDIA_CONTENT_TYPES) {
-          if (contentType.includes(type)) {
-            isMedia = true;
-            break;
+        const hasVideoContentType = MEDIA_CONTENT_TYPES.some(type => contentType.includes(type));
+        if (hasVideoContentType || url.includes('.m3u8')) {
+          isMedia = true;
+        }
+      } else if (url.includes('.m3u8') || url.includes('.mp4')) {
+        // Accept HLS or MP4 even without content-type header
+        isMedia = true;
+      }
+    }
+    // For non-Facebook sites, use original logic
+    else {
+      // 1. Check by file extension
+      for (const ext of MEDIA_FILE_EXTENSIONS) {
+        if (url.toLowerCase().includes(ext)) {
+          isMedia = true;
+          break;
+        }
+      }
+
+      // 2. Check by Content-Type header
+      if (!isMedia) {
+        const contentTypeHeader = responseHeaders.find(
+          (header) => header.name.toLowerCase() === 'content-type'
+        );
+        if (contentTypeHeader) {
+          const contentType = contentTypeHeader.value.toLowerCase();
+          for (const type of MEDIA_CONTENT_TYPES) {
+            if (contentType.includes(type)) {
+              isMedia = true;
+              break;
+            }
           }
+        }
+      }
+
+      // 3. Check by streaming platform patterns
+      if (!isMedia && isStreamingUrl(url)) {
+        const hasMediaExt = MEDIA_FILE_EXTENSIONS.some(ext => 
+          url.toLowerCase().includes(ext)
+        );
+        if (hasMediaExt) {
+          isMedia = true;
         }
       }
     }
 
-    // 3. Check by streaming platform patterns (but be more selective)
-    if (!isMedia) {
-        if (isStreamingUrl(url)) {
-            // Only consider it media if it has proper media extensions
-            const hasMediaExt = MEDIA_FILE_EXTENSIONS.some(ext => 
-              url.toLowerCase().includes(ext)
-            );
-            if (hasMediaExt) {
-              isMedia = true;
-            }
-        }
-    }
-
     if (isMedia) {
-      // Get tab URL for filtering
-      const tabUrl = await getTabUrl(details.tabId);
       await addMediaUrlForTab(details.tabId, url, tabUrl);
     }
   },
@@ -334,25 +346,22 @@ chrome.webRequest.onHeadersReceived.addListener(
 // Clear stored URLs when a tab is closed or navigates to a new page
 chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove(`tab_${tabId}_media`);
-  chrome.storage.session.remove(`tab_${tabId}_lastUrl`); // Clean up
+  chrome.storage.session.remove(`tab_${tabId}_lastUrl`);
 });
 
-// Improved tab navigation detection
+// Tab navigation detection
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status === 'loading' && changeInfo.url) {
-        // Get the previous URL to compare
         chrome.storage.session.get(`tab_${tabId}_lastUrl`).then(data => {
             const lastUrl = data[`tab_${tabId}_lastUrl`];
             const newUrlBase = changeInfo.url.split('#')[0].split('?')[0];
             const lastUrlBase = lastUrl ? lastUrl.split('#')[0].split('?')[0] : '';
             
-            // Only clear if it's a significant navigation (not just hash/param changes)
             if (newUrlBase !== lastUrlBase) {
                 chrome.storage.session.remove(`tab_${tabId}_media`);
                 updateBadge(tabId, 0);
             }
             
-            // Store the current URL for next comparison
             chrome.storage.session.set({ [`tab_${tabId}_lastUrl`]: changeInfo.url });
         });
     }
@@ -365,12 +374,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     chrome.storage.session.get(key).then(data => {
       sendResponse({ urls: data[key] || [] });
     });
-    return true; // Indicates that the response is sent asynchronously
+    return true;
   } else if (request.type === 'is_streaming_url') {
       sendResponse({ isStreaming: isStreamingUrl(request.url) });
       return true;
   } else if (request.type === 'clear_tab_urls') {
-      // Allow popup to manually clear URLs for current tab
       const key = `tab_${request.tabId}_media`;
       chrome.storage.session.remove(key);
       updateBadge(request.tabId, 0);
