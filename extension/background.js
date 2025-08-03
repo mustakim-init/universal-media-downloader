@@ -1,373 +1,360 @@
-// HIGHLY RESTRICTIVE background.js - Only detect ACTUALLY PLAYABLE Facebook media
+// background.js - Enhanced with intelligent media detection
 
-// List of media content types and extensions to look for.
-const MEDIA_CONTENT_TYPES = [
-  'application/x-mpegurl',
-  'application/vnd.apple.mpegurl',
-  'video/mp2t',
-  'video/mp4',
-  'audio/mp4',
-  'audio/aac',
-  'audio/mpeg'
-];
-
-const MEDIA_FILE_EXTENSIONS = ['.m3u8', '.ts', '.mp4', '.m4a', '.aac', '.mp3'];
-
-// Patterns for common streaming video platforms
-const STREAMING_PATTERNS = [
-  /youtube\.com\/watch/,
-  /youtu\.be\//,
-  /facebook\.com\/watch\?v=/,  // Only actual video watch pages
-  /fb\.watch\//,
-  /instagram\.com\/p\//,
-  /instagram\.com\/reel\//,
-  /tiktok\.com\/@.*\/video/
-];
-
-// COMPREHENSIVE ignore patterns - be very aggressive about filtering out non-playable content
-const IGNORE_PATTERNS = [
-  /thumb/i,
-  /preview/i,
-  /thumbnail/i,
-  /avatar/i,
-  /profile/i,
-  /cover/i,
-  /safe_image/i,
-  /scontent.*\.jpg/i,
-  /scontent.*\.png/i,
-  /\.jpg(\?|$)/i,
-  /\.png(\?|$)/i,
-  /\.jpeg(\?|$)/i,
-  /\.gif(\?|$)/i,
-  /\.webp(\?|$)/i,
-  // Facebook specific ignore patterns - VERY RESTRICTIVE
-  /facebook\.com.*rsrc\.php/i,
-  /fbcdn\.net.*\.jpg/i,
-  /fbcdn\.net.*\.png/i,
-  /fbcdn\.net.*\.gif/i,
-  /fbcdn\.net.*\.webp/i,
-  /fbstatic/i,
-  /static\.xx\.fbcdn\.net/i,
-  /graph\.facebook\.com/i,
-  /connect\.facebook\.net/i,
-  /\/images?\//i,
-  /\/img\//i,
-  /\/static\//i,
-  /\/assets?\//i,
-  // Size and quality indicators that suggest thumbnails
-  /s\d+x\d+/i,
-  /\d+x\d+.*\.jpg/i,
-  /\d+x\d+.*\.png/i,
-  /small/i,
-  /medium/i,
-  /tiny/i,
-  // Facebook specific non-video patterns
-  /p\d+x\d+/i,
-  /safe_image\.php/i,
-  /external\.php/i
-];
-
-// VERY STRICT Facebook video URL patterns - only these will be considered valid
-const FACEBOOK_PLAYABLE_PATTERNS = [
-  // Direct HLS streams (most reliable for Facebook)
-  /video-.*\.fbcdn\.net.*\.m3u8/i,
-  /scontent.*\.fbcdn\.net.*\.m3u8/i,
+// --- Configuration ---
+const MEDIA_DETECTION_CONFIG = {
+  // File extensions to monitor
+  mediaExtensions: ['.m3u8', '.mpd', '.ts', '.mp4', '.m4a', '.aac', '.mp3', '.webm', '.flv', '.mov', '.avi'],
   
-  // High-quality direct MP4 files (very specific patterns)
-  /video-[a-z0-9-]+\.fbcdn\.net.*\.mp4.*(?:hd|720|1080|high)/i,
-  /scontent-[a-z0-9-]+\.xx\.fbcdn\.net.*\.mp4.*(?!.*thumb).*$/i,
+  // Content types to monitor
+  mediaContentTypes: [
+    'application/x-mpegurl',
+    'application/vnd.apple.mpegurl',
+    'application/dash+xml',
+    'video/mp2t',
+    'video/mp4',
+    'video/webm',
+    'video/x-flv',
+    'audio/mp4',
+    'audio/aac',
+    'audio/mpeg',
+    'audio/webm'
+  ],
   
-  // Facebook's progressive download URLs (less common but valid)
-  /fbcdn\.net.*\/v\/.*\.mp4/i
-];
-
-// FACEBOOK-SPECIFIC: Only accept URLs that match very strict criteria
-function isValidFacebookMediaUrl(url, tabUrl) {
-  // If not Facebook context, don't apply these strict rules
-  if (!tabUrl || (!tabUrl.includes('facebook.com') && !tabUrl.includes('fb.watch'))) {
-    return true;
-  }
-
-  // FIRST: Must match at least one playable pattern
-  const matchesPlayablePattern = FACEBOOK_PLAYABLE_PATTERNS.some(pattern => pattern.test(url));
-  if (!matchesPlayablePattern) {
-    return false;
-  }
-
-  // SECOND: Additional strict checks
-  if (url.includes('facebook.com') || url.includes('fbcdn.net')) {
-    // Must be reasonably long (short URLs are usually thumbnails)
-    if (url.length < 120) return false;
-    
-    // Must NOT contain any thumbnail indicators
-    if (/thumb|preview|small|tiny|safe_image/i.test(url)) return false;
-    
-    // For MP4 files, must have quality indicators OR be from video subdomain
-    if (url.includes('.mp4')) {
-      const hasQualityIndicator = /(?:hd|720|1080|high|_hq)/i.test(url);
-      const isVideoSubdomain = /video-.*\.fbcdn\.net/i.test(url);
-      const isLongEnoughForReal = url.length > 150; // Real video URLs tend to be longer
-      
-      if (!hasQualityIndicator && !isVideoSubdomain && !isLongEnoughForReal) {
-        return false;
-      }
-    }
-    
-    // For HLS streams, must be from proper video domains
-    if (url.includes('.m3u8')) {
-      const isFromVideoDomain = /(?:video-.*\.fbcdn\.net|scontent.*\.fbcdn\.net)/i.test(url);
-      if (!isFromVideoDomain) return false;
-    }
-  }
-
-  return true;
-}
-
-// Function to check if URL should be ignored
-function shouldIgnoreUrl(url) {
-  return IGNORE_PATTERNS.some(pattern => pattern.test(url));
-}
-
-// Function to check if a URL matches a streaming pattern
-function isStreamingUrl(url) {
-  return STREAMING_PATTERNS.some(pattern => pattern.test(url));
-}
-
-// VERY RESTRICTIVE: Only accept URLs that pass ALL checks
-function isRelevantMediaUrl(url, tabUrl) {
-  // Basic ignore patterns - if it matches any, reject immediately
-  if (shouldIgnoreUrl(url)) {
-    return false;
-  }
+  // URL patterns for CDN/temporary media
+  cdnPatterns: [
+    /fbcdn\.net/i,
+    /instagram.*cdn/i,
+    /googlevideo\.com/i,
+    /videodelivery\.net/i,
+    /cloudfront\.net/i,
+    /akamaihd\.net/i,
+    /fastly\.net/i,
+    /cloudflare\.com/i,
+    /blob:/i
+  ],
   
-  // Facebook-specific validation - MUST pass this for Facebook URLs
-  if (!isValidFacebookMediaUrl(url, tabUrl)) {
-    return false;
-  }
+  // Patterns to ignore
+  ignorePatterns: [
+    /thumb/i, /preview/i, /thumbnail/i, /avatar/i, /profile/i, /cover/i,
+    /\.jpg(\?|$)/i, /\.png(\?|$)/i, /\.jpeg(\?|$)/i, /\.gif(\?|$)/i, /\.svg(\?|$)/i,
+    /\.css(\?|$)/i, /\.js(\?|$)/i, /\.woff/i, /\.json(\?|$)/i,
+    /google-analytics/i, /doubleclick/i, /facebook\.com\/tr/i, /analytics/i,
+    /\.ico(\?|$)/i, /favicon/i
+  ],
   
-  // For streaming platforms, apply additional restrictions
-  if (tabUrl && isStreamingUrl(tabUrl)) {
-    const hasGoodExtension = MEDIA_FILE_EXTENSIONS.some(ext => 
-      url.toLowerCase().includes(ext)
-    );
-    
-    if (!hasGoodExtension) return false;
-    
-    // Facebook gets EXTRA strict treatment
-    if (tabUrl.includes('facebook.com') || tabUrl.includes('fb.watch')) {
-      // Must be a very long URL (real video URLs are complex)
-      if (url.length < 150) return false;
-      
-      // Must contain specific video-related domains or patterns
-      const hasValidDomain = /(?:video-.*\.fbcdn\.net|scontent-.*\.xx\.fbcdn\.net)/i.test(url);
-      const hasHLS = url.includes('.m3u8');
-      const hasHighQualityMP4 = url.includes('.mp4') && /(?:hd|720|1080|high)/i.test(url);
-      
-      if (!hasValidDomain && !hasHLS && !hasHighQualityMP4) {
-        return false;
-      }
-      
-      // Final check: must not contain any suspicious patterns
-      if (/(?:thumb|preview|small|medium|tiny|safe_image|s\d+x\d+|p\d+x\d+)/i.test(url)) {
-        return false;
-      }
-    }
-    
-    return true;
-  }
-  
-  return true; // Allow all media for non-streaming sites
-}
+  // Minimum file size to consider (in bytes) - filters out small tracker files
+  minFileSize: 100000 // 100KB
+};
 
-// Store found media URLs per tab - VERY LIMITED for Facebook
-async function addMediaUrlForTab(tabId, url, tabUrl = null) {
-  // Must pass relevance check
-  if (!isRelevantMediaUrl(url, tabUrl)) {
-    return;
-  }
-  
-  const key = `tab_${tabId}_media`;
-  const data = await chrome.storage.session.get(key);
-  let urls = data[key] || [];
-  
-  // Clean URL
-  const cleanedUrl = cleanUrl(url);
-  
-  // For Facebook, be EXTREMELY restrictive - only 1 URL maximum
-  if (tabUrl && (tabUrl.includes('facebook.com') || tabUrl.includes('fb.watch'))) {
-    if (!urls.includes(cleanedUrl)) {
-      // For Facebook, only keep the MOST RECENT and LONGEST URL (most likely to be the real video)
-      urls = [cleanedUrl]; // Replace everything with just this URL
-      
-      await chrome.storage.session.set({ [key]: urls });
-      updateBadge(tabId, urls.length);
-    }
-  } 
-  // For other streaming platforms, limit to 2 URLs
-  else if (tabUrl && isStreamingUrl(tabUrl)) {
-    if (!urls.includes(cleanedUrl)) {
-      urls.unshift(cleanedUrl);
-      if (urls.length > 2) {
-        urls = urls.slice(0, 2);
-      }
-      await chrome.storage.session.set({ [key]: urls });
-      updateBadge(tabId, urls.length);
-    }
-  } 
-  // For non-streaming sites, keep original logic
-  else {
-    if (!urls.includes(cleanedUrl)) {
-      urls.push(cleanedUrl);
-      await chrome.storage.session.set({ [key]: urls });
-      updateBadge(tabId, urls.length);
-    }
-  }
-}
+// --- State Management ---
+const tabMediaState = new Map();
+const requestSizeTracking = new Map();
 
+// --- Helper Functions ---
 function updateBadge(tabId, count) {
-  const text = count > 0 ? String(count) : '';
-  chrome.action.setBadgeText({ tabId: tabId, text: text });
-  chrome.action.setBadgeBackgroundColor({ color: '#9d4edd' });
+  chrome.action.setBadgeText({
+    text: count > 0 ? String(count) : '',
+    tabId: tabId
+  });
+  chrome.action.setBadgeBackgroundColor({
+    color: '#9d4edd',
+    tabId: tabId
+  });
 }
 
-// Function to clean URLs (remove tracking parameters)
-function cleanUrl(url) {
-    try {
-        const urlObj = new URL(url);
-        // Remove common tracking parameters
-        ['utm_source', 'utm_medium', 'fbclid', 'gclid', 'feature'].forEach(param => {
-            urlObj.searchParams.delete(param);
-        });
-        // Remove YouTube specific parameters that don't affect content
-        if (urlObj.hostname.includes('youtube.com') || urlObj.hostname.includes('youtu.be')) {
-            ['index', 'list', 't', 'start', 'end'].forEach(param => {
-                urlObj.searchParams.delete(param);
-            });
-        }
-        return urlObj.toString();
-    } catch {
-        return url;
-    }
+function shouldIgnoreUrl(url) {
+  return MEDIA_DETECTION_CONFIG.ignorePatterns.some(pattern => pattern.test(url));
 }
 
-// Function to get tab URL for filtering purposes
-async function getTabUrl(tabId) {
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    return tab.url;
-  } catch {
-    return null;
-  }
+function isMediaUrl(url) {
+  // Check if URL contains media extension
+  const hasMediaExtension = MEDIA_DETECTION_CONFIG.mediaExtensions.some(ext => {
+    const urlLower = url.toLowerCase();
+    return urlLower.includes(ext) || urlLower.includes(encodeURIComponent(ext));
+  });
+  
+  // Check if URL matches CDN patterns (often indicates media)
+  const isCdnUrl = MEDIA_DETECTION_CONFIG.cdnPatterns.some(pattern => pattern.test(url));
+  
+  return hasMediaExtension || isCdnUrl;
 }
 
-// Listen to network requests - IGNORE *.fbcdn.net URLs for Facebook
-chrome.webRequest.onHeadersReceived.addListener(
-  async (details) => {
-    if (details.tabId < 0) return;
-
-    const { url, responseHeaders } = details;
-    let isMedia = false;
-
-    // Get tab URL first for context
-    const tabUrl = await getTabUrl(details.tabId);
+function extractMediaInfo(url, responseHeaders = []) {
+  const info = {
+    url: url,
+    type: 'unknown',
+    size: null,
+    contentType: null,
+    isTemporary: false,
+    platform: null
+  };
+  
+  // Check if it's a temporary/CDN URL
+  info.isTemporary = MEDIA_DETECTION_CONFIG.cdnPatterns.some(pattern => pattern.test(url));
+  
+  // Extract content type from headers
+  const contentTypeHeader = responseHeaders.find(h => h.name.toLowerCase() === 'content-type');
+  if (contentTypeHeader) {
+    info.contentType = contentTypeHeader.value.split(';')[0].trim();
     
-    // For Facebook, COMPLETELY IGNORE *.fbcdn.net URLs - they are not playable
-    if (tabUrl && (tabUrl.includes('facebook.com') || tabUrl.includes('fb.watch'))) {
-      // Skip ALL fbcdn.net URLs - they are never the playable video URLs
-      if (url.includes('fbcdn.net')) {
-        return; // Completely ignore these URLs
-      }
+    if (info.contentType.startsWith('video/')) {
+      info.type = 'video';
+    } else if (info.contentType.startsWith('audio/')) {
+      info.type = 'audio';
+    }
+  }
+  
+  // Extract size from headers
+  const contentLengthHeader = responseHeaders.find(h => h.name.toLowerCase() === 'content-length');
+  if (contentLengthHeader) {
+    info.size = parseInt(contentLengthHeader.value, 10);
+  }
+  
+  // Try to detect platform from URL
+  if (url.includes('fbcdn.net')) {
+    info.platform = 'facebook';
+  } else if (url.includes('instagram')) {
+    info.platform = 'instagram';
+  } else if (url.includes('googlevideo.com')) {
+    info.platform = 'youtube';
+  } else if (url.includes('tiktok')) {
+    info.platform = 'tiktok';
+  }
+  
+  // Guess type from extension if not determined
+  if (info.type === 'unknown') {
+    const urlLower = url.toLowerCase();
+    if (urlLower.includes('.mp4') || urlLower.includes('.webm') || urlLower.includes('.flv')) {
+      info.type = 'video';
+    } else if (urlLower.includes('.mp3') || urlLower.includes('.m4a') || urlLower.includes('.aac')) {
+      info.type = 'audio';
+    } else if (urlLower.includes('.m3u8') || urlLower.includes('.mpd')) {
+      info.type = 'stream';
+    }
+  }
+  
+  return info;
+}
+
+function storeMediaForTab(tabId, mediaInfo) {
+  if (!tabMediaState.has(tabId)) {
+    tabMediaState.set(tabId, {
+      pageUrl: '',
+      media: [],
+      lastUpdated: Date.now()
+    });
+  }
+  
+  const tabData = tabMediaState.get(tabId);
+  
+  // Check if URL already exists
+  const existingIndex = tabData.media.findIndex(m => m.url === mediaInfo.url);
+  if (existingIndex === -1) {
+    tabData.media.push(mediaInfo);
+  } else {
+    // Update existing entry
+    tabData.media[existingIndex] = mediaInfo;
+  }
+  
+  // Keep only the most recent 50 media items
+  if (tabData.media.length > 50) {
+    tabData.media = tabData.media.slice(-50);
+  }
+  
+  tabData.lastUpdated = Date.now();
+  
+  // Update badge
+  updateBadge(tabId, tabData.media.length);
+  
+  // Store in session storage for persistence
+  const storageKey = `tab_${tabId}_media`;
+  chrome.storage.session.set({
+    [storageKey]: tabData.media.map(m => ({
+      url: m.url,
+      type: m.type,
+      isTemporary: m.isTemporary
+    }))
+  });
+}
+
+// --- Main Detection Logic ---
+chrome.webRequest.onResponseStarted.addListener(
+  (details) => {
+    const { tabId, url, responseHeaders, statusCode, method } = details;
+    
+    // Skip if not a successful request or not associated with a tab
+    if (tabId < 0 || statusCode !== 200 || method !== 'GET') return;
+    
+    // Skip if URL should be ignored
+    if (shouldIgnoreUrl(url)) return;
+    
+    // Check if this might be a media URL
+    if (!isMediaUrl(url)) {
+      // Also check content-type header
+      const contentTypeHeader = responseHeaders?.find(h => 
+        h.name.toLowerCase() === 'content-type'
+      );
       
-      // Only process the actual tab URL if it's a video watch page
-      if (url === tabUrl && /facebook\.com\/watch\?v=|fb\.watch\//.test(url)) {
-        isMedia = true; // The tab URL itself is the media URL for Facebook
+      if (!contentTypeHeader || !MEDIA_DETECTION_CONFIG.mediaContentTypes.some(type => 
+        contentTypeHeader.value.includes(type)
+      )) {
+        return;
       }
     }
-    // For non-Facebook sites, use original logic
-    else {
-      // 1. Check by file extension
-      for (const ext of MEDIA_FILE_EXTENSIONS) {
-        if (url.toLowerCase().includes(ext)) {
-          isMedia = true;
-          break;
-        }
-      }
-
-      // 2. Check by Content-Type header
-      if (!isMedia) {
-        const contentTypeHeader = responseHeaders.find(
-          (header) => header.name.toLowerCase() === 'content-type'
-        );
-        if (contentTypeHeader) {
-          const contentType = contentTypeHeader.value.toLowerCase();
-          for (const type of MEDIA_CONTENT_TYPES) {
-            if (contentType.includes(type)) {
-              isMedia = true;
-              break;
-            }
-          }
-        }
-      }
-
-      // 3. Check by streaming platform patterns
-      if (!isMedia && isStreamingUrl(url)) {
-        const hasMediaExt = MEDIA_FILE_EXTENSIONS.some(ext => 
-          url.toLowerCase().includes(ext)
-        );
-        if (hasMediaExt) {
-          isMedia = true;
-        }
-      }
+    
+    // Extract media information
+    const mediaInfo = extractMediaInfo(url, responseHeaders || []);
+    
+    // Skip if file is too small (likely not actual media)
+    if (mediaInfo.size && mediaInfo.size < MEDIA_DETECTION_CONFIG.minFileSize) {
+      return;
     }
-
-    if (isMedia) {
-      await addMediaUrlForTab(details.tabId, url, tabUrl);
-    }
+    
+    // Store media information
+    storeMediaForTab(tabId, mediaInfo);
+    
+    // Log detection for debugging
+    console.log(`Media detected on tab ${tabId}:`, {
+      url: url.substring(0, 100) + '...',
+      type: mediaInfo.type,
+      size: mediaInfo.size,
+      isTemporary: mediaInfo.isTemporary
+    });
   },
-  { urls: ['<all_urls>'] },
-  ['responseHeaders']
+  { urls: ["<all_urls>"] },
+  ["responseHeaders"]
 );
 
-// Clear stored URLs when a tab is closed or navigates to a new page
-chrome.tabs.onRemoved.addListener((tabId) => {
-  chrome.storage.session.remove(`tab_${tabId}_media`);
-  chrome.storage.session.remove(`tab_${tabId}_lastUrl`);
-});
-
-// Tab navigation detection
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.status === 'loading' && changeInfo.url) {
-        chrome.storage.session.get(`tab_${tabId}_lastUrl`).then(data => {
-            const lastUrl = data[`tab_${tabId}_lastUrl`];
-            const newUrlBase = changeInfo.url.split('#')[0].split('?')[0];
-            const lastUrlBase = lastUrl ? lastUrl.split('#')[0].split('?')[0] : '';
-            
-            if (newUrlBase !== lastUrlBase) {
-                chrome.storage.session.remove(`tab_${tabId}_media`);
-                updateBadge(tabId, 0);
-            }
-            
-            chrome.storage.session.set({ [`tab_${tabId}_lastUrl`]: changeInfo.url });
-        });
-    }
-});
-
-// Message listener for communication with the popup
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.type === 'get_media_urls') {
-    const key = `tab_${request.tabId}_media`;
-    chrome.storage.session.get(key).then(data => {
-      sendResponse({ urls: data[key] || [] });
+// Alternative detection using onBeforeRequest for URLs that might not trigger onResponseStarted
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    const { tabId, url, method } = details;
+    
+    if (tabId < 0 || method !== 'GET') return;
+    if (shouldIgnoreUrl(url)) return;
+    
+    // Only process URLs with clear media indicators
+    const hasMediaExtension = MEDIA_DETECTION_CONFIG.mediaExtensions.some(ext => {
+      const urlLower = url.toLowerCase();
+      const cleanUrl = urlLower.split('?')[0].split('#')[0];
+      return cleanUrl.endsWith(ext);
     });
-    return true;
-  } else if (request.type === 'is_streaming_url') {
-      sendResponse({ isStreaming: isStreamingUrl(request.url) });
-      return true;
-  } else if (request.type === 'clear_tab_urls') {
-      const key = `tab_${request.tabId}_media`;
-      chrome.storage.session.remove(key);
-      updateBadge(request.tabId, 0);
-      sendResponse({ success: true });
-      return true;
+    
+    if (hasMediaExtension) {
+      const mediaInfo = extractMediaInfo(url);
+      storeMediaForTab(tabId, mediaInfo);
+    }
+  },
+  { urls: ["<all_urls>"] },
+  []
+);
+
+// --- Tab Management ---
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'loading' && changeInfo.url) {
+    // Get current tab data
+    const tabData = tabMediaState.get(tabId);
+    
+    if (tabData) {
+      // Check if navigating to a new page (not just hash change)
+      const oldUrlBase = tabData.pageUrl.split('#')[0].split('?')[0];
+      const newUrlBase = changeInfo.url.split('#')[0].split('?')[0];
+      
+      if (oldUrlBase !== newUrlBase) {
+        // Clear media for this tab
+        tabMediaState.delete(tabId);
+        chrome.storage.session.remove(`tab_${tabId}_media`);
+        updateBadge(tabId, 0);
+      }
+    }
+    
+    // Update page URL
+    if (!tabMediaState.has(tabId)) {
+      tabMediaState.set(tabId, {
+        pageUrl: changeInfo.url,
+        media: [],
+        lastUpdated: Date.now()
+      });
+    } else {
+      tabMediaState.get(tabId).pageUrl = changeInfo.url;
+    }
   }
 });
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  // Clean up data for closed tab
+  tabMediaState.delete(tabId);
+  chrome.storage.session.remove(`tab_${tabId}_media`);
+  requestSizeTracking.delete(tabId);
+});
+
+// --- Message Handling ---
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.type === 'get_media_urls') {
+    const tabId = request.tabId;
+    const tabData = tabMediaState.get(tabId);
+    
+    if (tabData && tabData.media.length > 0) {
+      // Sort media by type priority and recency
+      const sortedMedia = [...tabData.media].sort((a, b) => {
+        // Prioritize non-temporary URLs
+        if (!a.isTemporary && b.isTemporary) return -1;
+        if (a.isTemporary && !b.isTemporary) return 1;
+        
+        // Then by type (video > audio > stream > unknown)
+        const typePriority = { video: 4, audio: 3, stream: 2, unknown: 1 };
+        const aPriority = typePriority[a.type] || 0;
+        const bPriority = typePriority[b.type] || 0;
+        
+        return bPriority - aPriority;
+      });
+      
+      sendResponse({
+        urls: sortedMedia.map(m => m.url),
+        mediaInfo: sortedMedia,
+        pageUrl: tabData.pageUrl
+      });
+    } else {
+      // Try to get from session storage
+      chrome.storage.session.get(`tab_${tabId}_media`).then(data => {
+        const storedMedia = data[`tab_${tabId}_media`] || [];
+        sendResponse({
+          urls: storedMedia.map(m => m.url),
+          mediaInfo: storedMedia,
+          pageUrl: ''
+        });
+      });
+      return true; // Will send response asynchronously
+    }
+  }
+  
+  if (request.type === 'analyze_tab') {
+    const tabId = request.tabId;
+    const tabData = tabMediaState.get(tabId);
+    
+    const analysis = {
+      hasMedia: tabData ? tabData.media.length > 0 : false,
+      mediaCount: tabData ? tabData.media.length : 0,
+      mediaTypes: tabData ? [...new Set(tabData.media.map(m => m.type))] : [],
+      hasTemporaryUrls: tabData ? tabData.media.some(m => m.isTemporary) : false,
+      platforms: tabData ? [...new Set(tabData.media.filter(m => m.platform).map(m => m.platform))] : []
+    };
+    
+    sendResponse(analysis);
+  }
+});
+
+// --- Periodic Cleanup ---
+setInterval(() => {
+  const now = Date.now();
+  const maxAge = 30 * 60 * 1000; // 30 minutes
+  
+  for (const [tabId, data] of tabMediaState.entries()) {
+    if (now - data.lastUpdated > maxAge) {
+      tabMediaState.delete(tabId);
+      chrome.storage.session.remove(`tab_${tabId}_media`);
+    }
+  }
+}, 5 * 60 * 1000); // Run every 5 minutes
+
+console.log('Universal Media Downloader background script loaded with enhanced detection');

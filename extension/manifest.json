@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Universal Media Downloader",
-  "version": "2.0",
-  "description": "Detects and sends media stream URLs to the Universal Media Tool desktop application.",
+  "version": "1.0",
+  "description": "Detects and sends media stream URLs and cookies to the Universal Media Tool desktop application.",
   "permissions": [
     "activeTab",
     "webRequest",
-    "storage"
+    "storage",
+    "cookies",
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -26,5 +28,8 @@
   },
   "background": {
     "service_worker": "background.js"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; script-src-elem 'self' https://kit.fontawesome.com; connect-src 'self' http://localhost:5000;"
   }
 }

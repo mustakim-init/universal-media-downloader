@@ -12,3 +12,7 @@ __pycache__/
 .DS_Store
 Thumbs.db
 extension/test.html
+server.py
+gui.py
+merged_app.py
+*.docx
