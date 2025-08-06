@@ -46,6 +46,81 @@ let retryCount = 0;
 const MAX_RETRIES = 2;
 
 // --- Enhanced Utility Functions ---
+/**
+ * Injects a content script into the current tab to find the permalink of the most
+ * relevant video. It prioritizes videos currently in the viewport.
+ * @returns {Promise<string>} A promise that resolves to the best found video URL, 
+ * or the main page URL as a fallback.
+ */
+function findVideoPermalink() {
+  return new Promise(async (resolve) => {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+    // This function will be executed in the context of the web page
+    const scraper = () => {
+      // Find all video elements on the page
+      const videos = Array.from(document.querySelectorAll('video'));
+      let bestLink = null;
+
+      // Find the video that is most visible in the viewport
+      let maxVisibility = 0;
+      let mostVisibleVideo = null;
+
+      for (const video of videos) {
+        const rect = video.getBoundingClientRect();
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+
+        // Calculate the area of the video visible in the viewport
+        const visibleHeight = Math.max(0, Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0));
+        const visibleWidth = Math.max(0, Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0));
+        const visibleArea = visibleHeight * visibleWidth;
+        
+        if (visibleArea > maxVisibility) {
+          maxVisibility = visibleArea;
+          mostVisibleVideo = video;
+        }
+      }
+
+      if (mostVisibleVideo) {
+        // Search for a permalink by traversing up the DOM from the video element
+        let parent = mostVisibleVideo.closest('div[role="article"], div[data-visualcompletion="video-player-container"], body');
+        if (parent) {
+          // Look for links that are likely permalinks (e.g., timestamps, share links)
+          const permalinks = parent.querySelectorAll('a[href*="/videos/"], a[href*="/watch/"], a[href*="/reel/"]');
+          if (permalinks.length > 0) {
+             // Find the link with the most specific path
+            bestLink = Array.from(permalinks).sort((a, b) => b.href.length - a.href.length)[0].href;
+          }
+        }
+      }
+      
+      return bestLink;
+    };
+
+    chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      function: scraper
+    }, (injectionResults) => {
+      if (chrome.runtime.lastError || !injectionResults || injectionResults.length === 0) {
+        console.warn("Content script injection failed or returned no results. Falling back to page URL.");
+        resolve(tab.url); // Fallback to the main page URL
+        return;
+      }
+      
+      const foundUrl = injectionResults[0].result;
+      if (foundUrl) {
+        console.log("Found video permalink:", foundUrl);
+        resolve(foundUrl);
+      } else {
+        console.warn("No specific video permalink found on page. Falling back to page URL.");
+        resolve(tab.url); // Fallback to the main page URL
+      }
+    });
+  });
+}
+
+
 function showLoading(show) {
   loadingSpinner.classList.toggle('hidden', !show);
 }
@@ -358,111 +433,53 @@ document.addEventListener('click', (event) => {
 
 // Enhanced format fetching with better error handling
 getFormatsBtn.addEventListener('click', async () => {
-  const url = urlInput.value.trim();
-  const mediaType = document.querySelector('input[name="mediaType"]:checked').value;
+  showLoading(true);
   
-  if (!url) {
-    showStatus("Please enter a URL.", "error");
+  // *** NEW: First, find the specific video URL on the page ***
+  const contextUrl = await findVideoPermalink();
+  
+  if (!contextUrl) {
+    showStatus("Could not determine the video URL.", "error");
+    showLoading(false);
     return;
   }
+  console.log(`Using context URL for format fetch: ${contextUrl}`);
 
-  showLoading(true);
-  retryCount = 0;
+  const mediaType = document.querySelector('input[name="mediaType"]:checked').value;
 
   try {
-    // First analyze the URL for better context
-    showStatus("Analyzing URL and platform...", 'info', false);
-    
     const { data: analysis } = await makeRequestWithRetry(`${FLASK_BASE_URL}/analyze_url`, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ url })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: contextUrl })
     });
-    
     lastUrlAnalysis = analysis;
-    console.log('Enhanced URL Analysis:', analysis);
     
-    // Show platform-specific status
     const platform = analysis.platform || 'Unknown';
-    showStatus(`Detected ${platform} content. Fetching formats...`, 'info', false);
-    
-    // Get cookies with enhanced filtering
+    showStatus(`Detected ${platform} video. Fetching formats...`, 'info', false);
+
     let cookies = [];
     if (analysis.needs_cookies) {
-      cookies = await getCookiesForUrl(url);
-      console.log(`Retrieved ${cookies.length} cookies for ${platform}`);
-      
-      if (cookies.length === 0) {
-        showStatus(`Warning: ${platform} content may need authentication. Try logging in first.`, 'warning', false);
-      }
+      cookies = await getCookiesForUrl(currentPageUrl); // Cookies from the main domain
     }
     
-    // Fetch formats with retry logic
     const { data } = await makeRequestWithRetry(`${FLASK_BASE_URL}/get_formats`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ url, mediaType, cookies })
+      body: JSON.stringify({ url: contextUrl, mediaType, cookies })
     });
 
-    // Process and categorize formats
     const allFormats = data.formats || [];
-    availableFormats = { 
-      video: allFormats.filter(f => f.type === 'video' || (f.resolution && f.resolution !== 'audio only')), 
-      audio: allFormats.filter(f => f.type === 'audio' || f.resolution === 'audio only') 
-    };
+    availableFormats.video = allFormats.filter(f => f.type === 'video');
+    availableFormats.audio = allFormats.filter(f => f.type === 'audio');
     
     renderFormats();
     setUIState(true, true);
-    
-    // Enhanced success message
-    const formatCount = allFormats.length;
-    const platformInfo = data.platform ? ` from ${data.platform}` : '';
-    const cookieInfo = data.used_cookies ? ' (using authentication)' : '';
-    const methodInfo = data.approach ? ` via ${data.approach}` : '';
-    
-    showStatus(
-      `Found ${formatCount} format${formatCount !== 1 ? 's' : ''}${platformInfo}${cookieInfo}${methodInfo}`, 
-      "success"
-    );
+    showStatus(`Found ${allFormats.length} formats`, "success");
 
   } catch (error) {
     console.error('Format fetching error:', error);
-    
-    // Enhanced error messages based on error type
-    let errorMessage = "Failed to fetch formats.";
-    let errorType = "error";
-    let suggestions = [];
-    
-    if (error.message.includes('403') || error.message.includes('forbidden')) {
-      errorMessage = "Access denied - content may be private or require authentication.";
-      suggestions.push("Try logging into the platform first");
-      suggestions.push("Check if the content is publicly accessible");
-    } else if (error.message.includes('timeout')) {
-      errorMessage = "Request timed out - server may be slow.";
-      errorType = "warning";
-      suggestions.push("Try again in a moment");
-    } else if (error.message.includes('network') || error.message.includes('connection')) {
-      errorMessage = "Network error - check your internet connection.";
-      errorType = "warning";
-    } else if (error.message.includes('unsupported')) {
-      errorMessage = "This URL format is not supported.";
-    } else {
-      // Try to extract more specific error from server response
-      const serverError = error.message.match(/error":\s*"([^"]+)"/);
-      if (serverError) {
-        errorMessage = serverError[1];
-      }
-    }
-    
-    showStatus(errorMessage, errorType);
-    
-    // Show suggestions if any
-    if (suggestions.length > 0) {
-      setTimeout(() => {
-        showStatus(`💡 Suggestions: ${suggestions.join(' • ')}`, 'info', true, 8000);
-      }, 2000);
-    }
-    
+    showStatus(error.message || "Failed to fetch formats.", 'error');
   } finally {
     showLoading(false);
   }
@@ -470,144 +487,97 @@ getFormatsBtn.addEventListener('click', async () => {
 
 // Enhanced download with better progress tracking
 downloadHighestQualityBtn.addEventListener('click', async () => {
-  const url = urlInput.value.trim();
-  const mediaType = document.querySelector('input[name="mediaType"]:checked').value;
+  showLoading(true);
+  
+  // *** NEW: First, find the specific video URL on the page ***
+  const contextUrl = await findVideoPermalink();
 
-  if (!url) {
-    showStatus("Please enter a URL.", "error");
+  if (!contextUrl) {
+    showStatus("Could not determine the video URL.", "error");
+    showLoading(false);
     return;
   }
-
-  showLoading(true);
+  console.log(`Using context URL for download: ${contextUrl}`);
+  
+  const mediaType = document.querySelector('input[name="mediaType"]:checked').value;
 
   try {
-    // Use cached analysis if available, otherwise analyze
-    let analysis = lastUrlAnalysis;
-    if (!analysis) {
-      showStatus("Analyzing URL...", 'info', false);
-      const { data } = await makeRequestWithRetry(`${FLASK_BASE_URL}/analyze_url`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ url })
-      });
-      analysis = data;
-    }
+    const { data: analysis } = await makeRequestWithRetry(`${FLASK_BASE_URL}/analyze_url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: contextUrl })
+    });
+    lastUrlAnalysis = analysis;
     
-    const platform = analysis.platform || 'Unknown';
-    showStatus(`Preparing ${mediaType} download from ${platform}...`, 'info', false);
-    
-    // Get cookies with enhanced error handling
     let cookies = [];
     if (analysis.needs_cookies) {
-      cookies = await getCookiesForUrl(url);
-      console.log(`Using ${cookies.length} cookies for ${platform} download`);
-      
-      if (cookies.length === 0) {
-        showStatus(`Warning: No cookies found for ${platform}. Download may fail for private content.`, 'warning', true, 3000);
-      }
+      cookies = await getCookiesForUrl(currentPageUrl); // Cookies from the main domain
     }
     
-    // Start download with retry capability
     const { data } = await makeRequestWithRetry(`${FLASK_BASE_URL}/download`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ 
-        url, 
+        url: contextUrl, 
         media_type: mediaType, 
         format_id: 'highest', 
         cookies 
       })
     });
 
-    // Enhanced success message
-    const platformInfo = data.platform ? ` ${data.platform}` : '';
-    const authInfo = data.url_analysis?.used_enhanced_cookies ? ' (authenticated)' : '';
-    showStatus(`${platformInfo} download started successfully!${authInfo}`, "success");
-    
-    // Show additional info for temporary URLs
-    if (data.url_analysis?.is_temporary) {
-      setTimeout(() => {
-        showStatus("ℹ️ Using temporary URL with enhanced cookie handling", "info", true, 6000);
-      }, 2000);
-    }
+    showStatus(data.message || "Download started!", "success");
 
   } catch (error) {
     console.error('Download error:', error);
-    
-    // Enhanced error handling for downloads
-    let errorMessage = "Failed to start download.";
-    
-    if (error.message.includes('403') || error.message.includes('forbidden')) {
-      errorMessage = "Download blocked - content may require authentication or be geo-restricted.";
-    } else if (error.message.includes('private')) {
-      errorMessage = "Cannot download private content. Please ensure you have access.";
-    } else if (error.message.includes('unsupported')) {
-      errorMessage = "This content type is not supported for download.";
-    } else {
-      const serverError = error.message.match(/error":\s*"([^"]+)"/);
-      if (serverError) {
-        errorMessage = serverError[1];
-      }
-    }
-    
-    showStatus(errorMessage, 'error');
-    
+    showStatus(error.message || "Failed to start download.", 'error');
   } finally {
     showLoading(false);
   }
 });
 
 startDownloadBtn.addEventListener('click', async () => {
-  const url = urlInput.value.trim();
-  const mediaType = document.querySelector('input[name="mediaType"]:checked').value;
-  
   if (!selectedFormat) {
     showStatus("Please select a format.", "error");
     return;
   }
-
+  
   showLoading(true);
 
-  try {
-    // Use cached analysis
-    const analysis = lastUrlAnalysis || {};
-    const platform = analysis.platform || 'Unknown';
-    
-    showStatus(`Starting ${platform} download with format ${selectedFormat}...`, 'info', false);
+  // *** NEW: First, find the specific video URL on the page ***
+  const contextUrl = await findVideoPermalink();
 
-    // Get cookies if needed
+  if (!contextUrl) {
+    showStatus("Could not determine the video URL.", "error");
+    showLoading(false);
+    return;
+  }
+  console.log(`Using context URL for format download: ${contextUrl}`);
+
+  const mediaType = document.querySelector('input[name="mediaType"]:checked').value;
+
+  try {
     let cookies = [];
-    if (analysis.needs_cookies) {
-      cookies = await getCookiesForUrl(url);
+    if (lastUrlAnalysis && lastUrlAnalysis.needs_cookies) {
+      cookies = await getCookiesForUrl(currentPageUrl); // Cookies from the main domain
     }
     
     const { data } = await makeRequestWithRetry(`${FLASK_BASE_URL}/download`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ 
-        url, 
+        url: contextUrl, 
         media_type: mediaType, 
         format_id: selectedFormat, 
         cookies 
       })
     });
 
-    showStatus(`Format ${selectedFormat} download started successfully!`, "success");
-    
-    // Reset UI state
-    selectedFormat = null;
+    showStatus(data.message || "Download started!", "success");
     setUIState(false, appConnected);
-    
+
   } catch (error) {
     console.error('Specific format download error:', error);
-    
-    let errorMessage = "Failed to start download with selected format.";
-    const serverError = error.message.match(/error":\s*"([^"]+)"/);
-    if (serverError) {
-      errorMessage = serverError[1];
-    }
-    
-    showStatus(errorMessage, 'error');
+    showStatus(error.message || "Failed to start download.", 'error');
   } finally {
     showLoading(false);
   }
@@ -671,15 +641,13 @@ async function init() {
     return;
   }
 
-  // Get current tab with enhanced error handling
+  // Get current tab ID
   try {
     const currentTab = await getCurrentTab();
-    if (!currentTab) {
+    if (!currentTab || currentTab.id === undefined) {
       throw new Error("Could not access current tab");
     }
-    
     currentTabId = currentTab.id;
-    currentPageUrl = currentTab.url;
   } catch (error) {
     showStatus("Could not access current tab information.", "error");
     showLoading(false);
@@ -687,88 +655,70 @@ async function init() {
     return;
   }
   
-  // Check for restricted URLs
-  const isRestrictedUrl = !currentPageUrl || 
-    currentPageUrl.startsWith('chrome://') || 
-    currentPageUrl.startsWith('edge://') || 
-    currentPageUrl.startsWith('about:') ||
-    currentPageUrl.startsWith('chrome-extension://') ||
-    currentPageUrl.startsWith('moz-extension://');
-
-  if (isRestrictedUrl) {
-    urlInput.value = '';
-    detectionStatus.textContent = "Cannot access browser internal pages. Please navigate to a media site and paste URLs manually.";
-    detectionStatus.classList.remove('hidden');
-    showLoading(false);
-    setUIState(false, appConnected);
-    return;
-  }
-
-  // Get media URLs from background script with enhanced processing
+  // *** NEW AND IMPROVED LOGIC ***
+  // Get all media and the definite page URL from the background script
   chrome.runtime.sendMessage({ type: 'get_media_urls', tabId: currentTabId }, (response) => {
     if (chrome.runtime.lastError) {
       console.error(chrome.runtime.lastError.message);
-      detectedUrls = [];
-      detectedMediaInfo = [];
-    } else {
-      detectedUrls = response?.urls || [];
-      detectedMediaInfo = response?.mediaInfo || [];
-      currentPageUrl = response?.pageUrl || currentPageUrl;
+      showStatus("Error communicating with background script.", "error");
+      showLoading(false);
+      return;
     }
     
-    // Enhanced tab analysis
-    chrome.runtime.sendMessage({ type: 'analyze_tab', tabId: currentTabId }, (analysis) => {
-      console.log('Enhanced tab analysis:', analysis);
-      
-      // Determine what URL to show with enhanced logic
-      const platform = detectPlatform(currentPageUrl);
-      
-      if (platform) {
-        // We're on a streaming platform page
-        urlInput.value = currentPageUrl;
-        detectionStatus.innerHTML = `
-          <span style="color: var(--success);">📱 ${platform.charAt(0).toUpperCase() + platform.slice(1)} page detected</span><br>
-          <small>Ready for enhanced ${platform} download</small>
-        `;
-        detectionStatus.classList.remove('hidden');
-      } else if (detectedUrls.length > 0) {
-        // We have detected media
-        const bestUrl = selectBestUrl(detectedMediaInfo, currentPageUrl);
-        urlInput.value = bestUrl;
-        
-        let statusText = `${detectedUrls.length} media file${detectedUrls.length !== 1 ? 's' : ''} detected`;
-        if (analysis?.hasTemporaryUrls) {
-          statusText += ' • Enhanced cookie handling enabled';
-        }
-        if (analysis?.platforms && analysis.platforms.length > 0) {
-          statusText += ` • Platforms: ${analysis.platforms.join(', ')}`;
-        }
-        
-        detectionStatus.innerHTML = `
-          <span style="color: var(--primary);">🎯 ${statusText}</span>
-        `;
-        detectionStatus.classList.remove('hidden');
-        
-        // Enable dropdown arrow with enhanced styling
-        dropdownArrow.style.opacity = '1';
-        dropdownArrow.title = `${detectedUrls.length} media file${detectedUrls.length !== 1 ? 's' : ''} detected`;
-      } else {
-        // No media detected, show current page URL with suggestions
-        urlInput.value = currentPageUrl;
-        detectionStatus.innerHTML = `
-          <span style="color: var(--warning);">⚠️ No media auto-detected</span><br>
-          <small>You can paste media URLs manually or try navigating to video pages</small>
-        `;
-        detectionStatus.classList.remove('hidden');
-        
-        // Disable dropdown arrow
-        dropdownArrow.style.opacity = '0.3';
-        dropdownArrow.title = 'No media detected on this page';
-      }
-      
+    detectedUrls = response?.urls || [];
+    detectedMediaInfo = response?.mediaInfo || [];
+    // *** CRITICAL: Set currentPageUrl from the reliable background script response ***
+    currentPageUrl = response?.pageUrl || '';
+
+    // Check for restricted URLs
+    const isRestrictedUrl = !currentPageUrl || 
+      currentPageUrl.startsWith('chrome://') || 
+      currentPageUrl.startsWith('edge://') || 
+      currentPageUrl.startsWith('about:') ||
+      currentPageUrl.startsWith('chrome-extension://') ||
+      currentPageUrl.startsWith('moz-extension://');
+
+    if (isRestrictedUrl) {
+      urlInput.value = '';
+      detectionStatus.textContent = "Cannot access browser internal pages. Please navigate to a media site.";
+      detectionStatus.classList.remove('hidden');
       showLoading(false);
       setUIState(false, appConnected);
-    });
+      return;
+    }
+
+    // Now, proceed with the UI logic using the correct currentPageUrl
+    const platform = detectPlatform(currentPageUrl);
+    
+    if (platform) {
+      urlInput.value = currentPageUrl;
+      detectionStatus.innerHTML = `
+        <span style="color: var(--success);">📱 ${platform.charAt(0).toUpperCase() + platform.slice(1)} page detected</span><br>
+        <small>Ready for enhanced ${platform} download</small>
+      `;
+      detectionStatus.classList.remove('hidden');
+    } else if (detectedUrls.length > 0) {
+      const bestUrl = selectBestUrl(detectedMediaInfo, currentPageUrl);
+      urlInput.value = bestUrl;
+      
+      let statusText = `${detectedUrls.length} media file${detectedUrls.length !== 1 ? 's' : ''} detected`;
+      detectionStatus.innerHTML = `<span style="color: var(--primary);">🎯 ${statusText}</span>`;
+      detectionStatus.classList.remove('hidden');
+      dropdownArrow.style.opacity = '1';
+      dropdownArrow.title = `${detectedUrls.length} media file${detectedUrls.length !== 1 ? 's' : ''} detected`;
+    } else {
+      urlInput.value = currentPageUrl;
+      detectionStatus.innerHTML = `
+        <span style="color: var(--warning);">⚠️ No media auto-detected</span><br>
+        <small>You can still try to download from this page URL directly.</small>
+      `;
+      detectionStatus.classList.remove('hidden');
+      dropdownArrow.style.opacity = '0.3';
+      dropdownArrow.title = 'No media detected on this page';
+    }
+    
+    showLoading(false);
+    setUIState(false, appConnected);
   });
 }
 

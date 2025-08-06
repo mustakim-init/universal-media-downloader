@@ -1,5 +1,3 @@
-# server.py - Enhanced version with smart cookie handling and anti-detection measures
-
 import sys
 import os
 import threading
@@ -16,11 +14,13 @@ from urllib.parse import urlparse, parse_qs
 import random
 import base64
 
+
 # --- Flask Server ---
 from flask import Flask, request, jsonify, g, make_response
 from flask_cors import CORS
 from werkzeug.serving import run_simple
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
+
 
 # --- Configure Logging ---
 logger = logging.getLogger(__name__)
@@ -449,11 +449,9 @@ def run_yt_dlp_command(args, cookies=None, timeout=None, platform_config=None, r
                 logger.warning(f"Attempt {retry_count + 1} failed, retrying with different approach...")
                 time.sleep(2 ** retry_count)  # Exponential backoff
                 
-                # Try with modified arguments on retry
+                # FIX: Removed the broken --extract-flat logic that was here
+                # On retry, we'll just use the same arguments but with a fresh connection.
                 modified_args = args.copy()
-                if '--list-formats' in modified_args:
-                    # For format listing, try with different extraction method
-                    modified_args.extend(['--extract-flat', '--no-playlist'])
                 
                 return run_yt_dlp_command(
                     modified_args, cookies, timeout, platform_config, retry_count + 1
@@ -569,21 +567,53 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
                     os.unlink(temp_cookie_file)
                 raise
         
-        # Get filename prediction with enhanced error handling
-        info_command = [YT_DLP_BIN, '--get-filename', '--no-warnings', *cookie_args, '-o', '%(title)s.%(ext)s', url]
-        if not is_playlist:
-            info_command.insert(1, '--no-playlist')
-        
-        info_result = run_command_in_bundle(info_command, capture_output=True, text=True, check=False, timeout=30)
-        predicted_filename = sanitize_filename(info_result.stdout.strip()) if info_result.stdout else filename
-        
-        if not predicted_filename or info_result.returncode != 0:
-            logger.warning(f"Failed to predict filename, using default: {filename}")
-            predicted_filename = filename
+        # --- FIX #3: Overhauled path and filename prediction ---
+        predicted_filename = filename
+        final_output_path = ""  # Will store the final path for verification
 
-        # Prepare output template
-        if not is_playlist:
+        if is_playlist:
+            # For playlists, get the playlist title to use as a directory name
+            info_command = [YT_DLP_BIN, '--get-filename', '--no-warnings', *cookie_args, '-o', '%(playlist_title)s', '--playlist-end', '1', url]
+            info_result = run_command_in_bundle(info_command, capture_output=True, text=True, check=False, timeout=30)
+            
+            raw_title = info_result.stdout.strip().split('\n')[0] if info_result.stdout.strip() else "Playlist"
+            predicted_filename = sanitize_filename(raw_title)
+            filename = predicted_filename  # This name is sent to the GUI
+            
+            # The output template uses the predicted directory name
+            final_output_template = os.path.join(download_dir, predicted_filename, '%(title)s.%(ext)s')
+            # The path to verify later is the directory itself
+            final_output_path = os.path.join(download_dir, predicted_filename)
+            # Ensure the target directory for the playlist exists, as yt-dlp can fail on this
+            os.makedirs(os.path.dirname(final_output_template), exist_ok=True)
+        else:  # For single files
+            info_command = [YT_DLP_BIN, '--get-filename', '--no-warnings', *cookie_args, '-o', '%(title)s.%(ext)s', '--no-playlist', url]
+            info_result = run_command_in_bundle(info_command, capture_output=True, text=True, check=False, timeout=30)
+            
+            predicted_filename_raw = info_result.stdout.strip()
+            if predicted_filename_raw and predicted_filename_raw != 'NA':
+                predicted_filename = sanitize_filename(predicted_filename_raw)
+            else:
+                # *** NEW: Smart fallback for direct media URLs without a title ***
+                try:
+                    # Attempt to parse the URL and get a cleaner name from the path
+                    parsed_url = urlparse(url)
+                    base_name_from_path = os.path.basename(parsed_url.path)
+                    # If the name is useful (not a hash, has an extension), use it
+                    if base_name_from_path and '.' in base_name_from_path:
+                         predicted_filename = sanitize_filename(base_name_from_path)
+                    else:
+                        # Otherwise, create a clean, timestamped generic name
+                        predicted_filename = f"media_download_{int(time.time())}"
+                except Exception:
+                    # Final fallback if parsing fails for any reason
+                    predicted_filename = f"media_download_{int(time.time())}"
+            
+            filename = predicted_filename # This name is sent to the GUI
+
+            # Handle existing files for single downloads
             base_name, ext = os.path.splitext(predicted_filename)
+
             if not ext:
                 ext = '.mp4' if media_type == 'video' else '.mp3'
             current_filename = base_name + ext
@@ -591,10 +621,10 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
             while not settings.get('overwrite_existing_file') and os.path.exists(os.path.join(download_dir, current_filename)):
                 counter += 1
                 current_filename = f"{base_name} ({counter}){ext}"
+            
             final_output_template = os.path.join(download_dir, current_filename)
-            filename = current_filename
-        else:
-            final_output_template = os.path.join(download_dir, '%(playlist_title)s/%(title)s.%(ext)s')
+            final_output_path = final_output_template  # The path to verify is the file itself
+            filename = current_filename  # This name is sent to the GUI
 
         enhanced_command.extend(['-o', final_output_template])
         
@@ -664,21 +694,27 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
             error_msg = '\n'.join(error_lines[-10:])
             raise Exception(f"yt-dlp download failed (exit code {return_code}): {error_msg}")
         
-        # Enhanced file verification
-        if os.path.exists(final_output_template):
-            actual_filesize_bytes = os.path.getsize(final_output_template)
-            actual_filename = os.path.basename(final_output_template)
-        else:
-            import glob
-            pattern = final_output_template.replace('[', '[[]').replace(']', '[]]') + '*'
-            files = glob.glob(pattern)
-            if files:
-                final_output_template = files[0]
-                actual_filesize_bytes = os.path.getsize(final_output_template)
-                actual_filename = os.path.basename(final_output_template)
+        # --- FIX #3: Overhauled file verification logic ---
+        actual_filesize_bytes = 0
+        actual_filename = os.path.basename(final_output_path)  # Use the predicted name
+        final_path_for_gui = final_output_path  # The path to be sent to GUI
+
+        if is_playlist:
+            if os.path.isdir(final_output_path):
+                try:
+                    # Calculate total size of all files in the playlist directory
+                    actual_filesize_bytes = sum(os.path.getsize(os.path.join(dirpath, f)) for dirpath, _, filenames in os.walk(final_output_path) for f in filenames)
+                except Exception as e:
+                    logger.warning(f"Could not calculate total size of playlist directory {final_output_path}: {e}")
+                    actual_filesize_bytes = 0  # Report 0 if error
             else:
-                raise Exception("Downloaded file not found at expected location.")
-        
+                raise Exception(f"Downloaded playlist directory not found at expected location: {final_output_path}")
+        else:  # single file
+            if os.path.exists(final_output_path):
+                actual_filesize_bytes = os.path.getsize(final_output_path)
+            else:
+                raise Exception(f"Downloaded file not found at expected location: {final_output_path}")
+
         detected_filetype = 'playlist' if is_playlist else media_type
 
         gui_message_queue.put({
@@ -695,7 +731,7 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
             'filetype': detected_filetype, 
             'filename': actual_filename, 
             'is_playlist': is_playlist, 
-            'path': final_output_template, 
+            'path': final_path_for_gui,  # Use the corrected final path
             'timestamp': time.time(), 
             'filesize_bytes': actual_filesize_bytes
         })
@@ -728,11 +764,13 @@ def health_check():
 
 @app.route('/shutdown', methods=['POST'])
 def shutdown():
+    # FIX #2: Gracefully handle missing shutdown function
     func = request.environ.get('werkzeug.server.shutdown')
     if func is None:
-        raise RuntimeError('Not running with the Werkzeug Server')
+        logger.warning("Shutdown command received, but not running with the Werkzeug Server. Cannot self-terminate.")
+        return jsonify({'status': 'error', 'message': 'Not running with the Werkzeug Server'}), 500
     func()
-    return jsonify({'status': 'success'})
+    return jsonify({'status': 'success', 'message': 'Server is shutting down.'})
 
 @app.route("/analyze_url", methods=["POST"])
 def analyze_url():
@@ -783,14 +821,12 @@ def get_formats():
             cookies = CookieManager.filter_essential_cookies(cookies, platform)
         logger.info(f"Using {len(cookies)} filtered cookies for {platform}")
     
-    # Try multiple format listing approaches
+    # FIX #1 & #4: Removed unsupported/redundant flags from approaches
     format_approaches = [
         # Standard approach
-        ["--list-formats", "--ignore-errors", "--no-check-certificate", url],
-        # Fallback with flat extraction
-        ["--list-formats", "--extract-flat", "--ignore-errors", "--no-check-certificate", url],
+        ["--list-formats", "--ignore-errors", url],
         # Last resort - try to get basic info
-        ["--dump-json", "--ignore-errors", "--no-check-certificate", url]
+        ["--dump-json", "--ignore-errors", url]
     ]
     
     for approach_idx, args in enumerate(format_approaches):
@@ -804,7 +840,8 @@ def get_formats():
         )
         
         if stdout:
-            if approach_idx < 2:  # Standard format list approaches
+            # FIX #1: Adjusted index check after removing an approach
+            if approach_idx == 0:  # Standard format list approach
                 formats = stdout.strip().split('\n')
                 parsed_formats = parse_format_list(formats)
                 if parsed_formats:
@@ -1515,18 +1552,21 @@ class QCustomCheckBox(QCheckBox):
         thumb_size = self.height() - 6  # 3px padding on each side
         thumb_y = (track_height - thumb_size) / 2
 
+        # FIX #8: Cast float position to int for drawing
+        thumb_x = int(self.pos)
+
         if self.isChecked():
             # Checked state: active color for track, circle on the right
             painter.setBrush(self._activeColor)
             painter.drawRoundedRect(0, 0, track_width, track_height, track_radius, track_radius)
             painter.setBrush(self._circleColor)
-            painter.drawEllipse(self.pos, thumb_y, thumb_size, thumb_size)
+            painter.drawEllipse(thumb_x, thumb_y, thumb_size, thumb_size)
         else:
             # Unchecked state: background color for track, circle on the left
             painter.setBrush(self.bgColor)
             painter.drawRoundedRect(0, 0, track_width, track_height, track_radius, track_radius)
             painter.setBrush(self._circleColor)
-            painter.drawEllipse(self.pos, thumb_y, thumb_size, thumb_size)
+            painter.drawEllipse(thumb_x, thumb_y, thumb_size, thumb_size)
 
         painter.end()
 
@@ -1622,13 +1662,12 @@ class CustomHeaderView(QHeaderView):
 from PySide6.QtCore import QAbstractTableModel
 
 
-
 class DownloadTableModel(QAbstractTableModel):
     def __init__(self, data, is_completed_model=False, parent=None):
         super().__init__(parent)
-        # _data now represents the *currently visible* data (filtered or not)
         self._data = data
         self.is_completed_model = is_completed_model
+        # Define headers based on whether it's an active or completed model
         if self.is_completed_model:
             self.header_labels = ["Name", "Date", "Size", "Type", "Location"]
         else:
@@ -1641,30 +1680,36 @@ class DownloadTableModel(QAbstractTableModel):
         return len(self.header_labels)
 
     def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid() or role != Qt.DisplayRole:
+        if not index.isValid():
             return None
-        try:
-            item = self._data[index.row()]
-            column = index.column()
+        if role == Qt.DisplayRole:
+            try:
+                item = self._data[index.row()]
+                column = index.column()
 
-            if self.header_labels[column] == "Name":
-                return item.get('filename', item.get('url', 'N/A'))
-            elif self.header_labels[column] == "Date":
-                timestamp = item.get('timestamp')
-                return datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M') if timestamp else "N/A"
-            elif self.header_labels[column] == "Size":
-                return format_bytes(item.get('filesize_bytes', 0))
-            elif self.header_labels[column] == "Progress":
-                return item.get('progress', '0%')
-            elif self.header_labels[column] == "Type":
-                return item.get('filetype', 'Unknown').capitalize()
-            elif self.header_labels[column] == "Status":
-                return item.get('status', 'N/A')
-            elif self.header_labels[column] == "Location":
-                path = item.get('path', 'N/A')
-                return os.path.dirname(path) if path != 'N/A' else 'N/A'
-        except IndexError:
-            return None
+                if self.header_labels[column] == "Name":
+                    return item.get('filename', item.get('url', 'N/A'))
+                elif self.header_labels[column] == "Date":
+                    timestamp = item.get('timestamp')
+                    if timestamp:
+                        return datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M')
+                    return "N/A"
+                elif self.header_labels[column] == "Size":
+                    filesize_bytes = item.get('filesize_bytes', 0)
+                    return format_bytes(filesize_bytes)
+                elif self.header_labels[column] == "Progress": # For active downloads
+                    return item.get('progress', '0%')
+                elif self.header_labels[column] == "Type": # For completed downloads
+                    file_type = item.get('filetype', 'Unknown').capitalize()
+                    return file_type
+                elif self.header_labels[column] == "Status":
+                    return item.get('status', 'N/A')
+                elif self.header_labels[column] == "Location":
+                    path = item.get('path', 'N/A')
+                    return os.path.dirname(path) if path != 'N/A' else 'N/A'
+            except IndexError:
+                # This can happen briefly during filtering; it's safe to ignore.
+                return None
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -1673,28 +1718,35 @@ class DownloadTableModel(QAbstractTableModel):
         return None
 
     def sort(self, column, order):
-        """Sorts the model's internal data."""
         self.layoutAboutToBeChanged.emit()
+        
         column_name = self.header_labels[column]
         
+        # Define a key function for sorting
         def get_sort_key(item):
             if column_name == "Name":
                 return item.get('filename', item.get('url', '')).lower()
             elif column_name == "Date":
                 return item.get('timestamp', 0)
             elif column_name == "Size":
-                # This correctly sorts by the raw byte value, not the formatted string
                 return item.get('filesize_bytes', 0)
             elif column_name == "Progress":
                 progress_str = item.get('progress', '0%').strip('%')
                 try:
                     return float(progress_str)
-                except (ValueError, TypeError):
+                except ValueError:
                     return 0
-            else: # Status, Type, Location
-                return str(item.get(column_name.lower(), '')).lower()
+            elif column_name == "Status":
+                return item.get('status', '').lower()
+            elif column_name == "Type":
+                return item.get('filetype', '').lower()
+            elif column_name == "Location":
+                path = item.get('path', '')
+                return os.path.dirname(path).lower()
+            return None
 
         self._data.sort(key=get_sort_key, reverse=(order == Qt.DescendingOrder))
+        
         self.layoutChanged.emit()
 
     def addItem(self, item_data):
@@ -1731,17 +1783,14 @@ class DownloadTableModel(QAbstractTableModel):
         self.endResetModel()
 
     def setFilteredData(self, filtered_data):
-        """
-        Atomically replaces the model's data. This is the primary method
-        for updating the view from the master data list.
-        """
+        """Properly sets filtered data and notifies views."""
         self.beginResetModel()
         self._data = filtered_data
         self.endResetModel()
 
     def getData(self):
-        """Returns a copy of the model's current data."""
-        return list(self._data)
+        """Returns a copy of the current data."""
+        return self._data[:] # Return a copy to prevent external modification
 
 # Dialog for adding a new download
 class AddDownloadDialog(QDialog):
@@ -3143,18 +3192,14 @@ class MainWindow(QMainWindow):
         #     self.update_uri_scheme_setup_display()
 
 
-    def filter_displayed_items(self, search_query=""):
-        """
-        The single source of truth for populating table views. It reads from the
-        appropriate master list, filters, and updates the model.
-        """
+    def filter_displayed_items(self, search_query):
+        """Filters items in the currently displayed list based on the search query."""
         search_query = search_query.lower().strip()
 
         source_data = None
         current_model = None
         current_table_view = None
 
-        # --- FIX: Determine the correct master data source for the current view ---
         if self.current_panel_type == "active_downloads":
             source_data = self.active_downloads_data
             current_model = self.active_downloads_model
@@ -3172,34 +3217,32 @@ class MainWindow(QMainWindow):
             current_model = self.completed_playlists_model
             current_table_view = self.completed_playlists_table_view
         else:
-            return  # No filtering for other panels
+            return # No filtering for other panels
 
-        # --- FIX: Always build the filtered list from the master data source ---
+        filtered_data = []
         if search_query:
-            filtered_data = [
-                item_info for item_info in source_data if
-                search_query in (
-                    item_info.get('filename', '').lower() +
-                    item_info.get('url', '').lower() +
-                    item_info.get('status', '').lower() +
+            for item_info in source_data:
+                # Search in filename, URL, status, type (for completed)
+                search_text = (
+                    item_info.get('filename', '').lower() + 
+                    item_info.get('url', '').lower() + 
+                    item_info.get('status', '').lower() + 
                     item_info.get('filetype', '').lower()
                 )
-            ]
+                if search_query in search_text:
+                    filtered_data.append(item_info)
         else:
-            filtered_data = list(source_data)  # Use a copy of the master list
+            filtered_data = source_data[:] # Show all, use a copy
 
-        # --- FIX: Preserve sorting state ---
+        current_model.setFilteredData(filtered_data) # <--- Using setFilteredData
+        
+        # Re-apply current sort order after filtering
         sort_column = current_table_view.horizontalHeader().sortIndicatorSection()
         sort_order = current_table_view.horizontalHeader().sortIndicatorOrder()
-
-        # --- FIX: Atomically update the model with the new, filtered data ---
-        current_model.setFilteredData(filtered_data)
-
-        # --- FIX: Re-apply the sort on the newly set data ---
         if sort_column != -1:
             current_model.sort(sort_column, sort_order)
-            
-        QApplication.processEvents()
+
+        QApplication.processEvents() # Force redraw
 
 
     # --- Action Button Implementations ---
@@ -3366,7 +3409,7 @@ class MainWindow(QMainWindow):
             self.show_status("Cancellation aborted.", "info")
 
     def refresh_current_view(self):
-        self.filter_current_view(self.search_input.text())
+        self.filter_displayed_items(self.search_input.text())
         self.show_status("View refreshed.", "info")
 
 
@@ -3382,15 +3425,16 @@ class MainWindow(QMainWindow):
         self.show_status(f"Double-click action set to: {settings.get('double_click_action')}", "info")
 
 
+    # --- Panel Update Functions (to refresh content when shown) ---
     def update_active_downloads_display(self):
-        """Refreshes the active downloads panel if it's the one being viewed."""
-        if self.current_panel_type == "active_downloads":
-            self.filter_displayed_items(self.search_input.text())
+        """Refreshes the display of active downloads in the GUI."""
+        self.filter_displayed_items(self.search_input.text())
 
-    def update_completed_display(self):
-        """Refreshes a completed downloads panel if it's the one being viewed."""
-        if self.current_panel_type in ["completed_videos", "completed_audios", "completed_playlists"]:
-            self.filter_displayed_items(self.search_input.text())
+
+    def update_completed_display(self, file_type):
+        """Refreshes the display of completed downloads for a specific type."""
+        self.filter_displayed_items(self.search_input.text())
+
 
     def clear_completed_list(self, file_type):
         """Clears the completed downloads list for a specific type"""
@@ -3431,82 +3475,92 @@ class MainWindow(QMainWindow):
 
 
     def add_download_to_list(self, download_info):
-        """
-        Adds a new download to the master data list and refreshes the UI.
-        This is now the single point of entry for adding new items.
-        """
-        # --- FIX: Operate only on the master data list ---
+        """Adds a new download entry to the active downloads list in the GUI."""
+        # Use the master data list for the check
         if not any(d['url'] == download_info['url'] for d in self.active_downloads_data):
             self.active_downloads_data.append(download_info)
+            # --- FIX: Show it immediately in the active-downloads table if that panel is current ---
+            if self.current_panel_type == 'active_downloads':
+                self.active_downloads_model.addItem(download_info)
+            else:
+                # If not on the active downloads panel, update its display so it's ready when switched to
+                self.update_active_downloads_display()
+            # --- END FIX ---
             self.show_status(f"Download added: {download_info.get('filename', download_info.get('url'))}", "info")
-            # --- FIX: Trigger a full refresh of the view ---
-            self.update_active_downloads_display()
         QApplication.processEvents()
+
 
 
     def update_download_status_in_list(self, url, new_data_dict):
-        """
-        Updates an item in the master list and refreshes the view. It also handles
-        moving items from the active list if they fail or are cancelled.
-        """
-        # --- FIX: Find and update the item in the master list ---
-        item_updated = False
-        for item in self.active_downloads_data:
+        """Updates an existing download entry in the GUI. Does NOT add new entries."""
+        # Check if the download already exists by URL in the active_downloads_data (master list)
+        found_index = -1
+        for i, item in enumerate(self.active_downloads_data):
             if item.get('url') == url:
-                item.update(new_data_dict)
-                item_updated = True
+                found_index = i
                 break
 
-        if not item_updated:
+        if found_index != -1:
+            # Update existing entry in the master data list
+            current_data = self.active_downloads_data[found_index]
+            current_data.update(new_data_dict) # Merge new data into existing
+            
+            # Now, update the model. The model might be filtered, so we need to ensure
+            # the update propagates correctly to the currently displayed items.
+            # The DownloadTableModel.updateItem method will handle emitting dataChanged.
+            self.active_downloads_model.updateItem(url, new_data_dict)
+        else:
             logger.warning(f"Received update for unknown download URL: {url}. Data: {new_data_dict}")
-            return
 
         current_status = new_data_dict.get('status', 'N/A')
-        if current_status in ['Failed', 'Error', 'Cancelled']:
-            filename = new_data_dict.get('filename', url)
-            message = new_data_dict.get('message', '')
+        filename = new_data_dict.get('filename', url)
+        message = new_data_dict.get('message', '')
+
+        if current_status == 'Completed':
+            self.show_status(f"Download completed: {filename}", "success")
+            # Completed downloads are handled by add_completed_download, which removes from active_downloads_data
+        elif current_status in ['Failed', 'Error', 'Cancelled']:
+            logger.error(f"Download for {url} {current_status}. Message: {message}")
             self.show_status(f"Download {current_status}: {filename}. Error: {message}", "error", timeout_ms=10000)
             
-            # --- FIX: Remove from master list on terminal status ---
+            # Remove from active_downloads_data if terminal status
+            # This ensures the master list doesn't retain failed/cancelled items.
+            # The model's removeItem will also update the view.
             self.active_downloads_data[:] = [d for d in self.active_downloads_data if d.get('url') != url]
-            self._remove_process_from_tracker(url)
+            self.active_downloads_model.removeItem(url)
+            self._remove_process_from_tracker(url) # Ensure process is also removed from tracker
         
-        # --- FIX: Always refresh the view to reflect all changes ---
-        self.update_active_downloads_display()
-        QApplication.processEvents()
+        QApplication.processEvents() # Force GUI redraw
+
 
 
     def add_completed_download(self, download_info):
-        """
-        Moves a download from the active master list to the appropriate
-        completed master list, then refreshes the UI.
-        """
+        """Adds a completed download to the appropriate completed list and removes it from active."""
         filetype = download_info.get('filetype', 'unknown')
-        url_to_move = download_info.get('url')
-
-        # --- FIX: Add to the correct completed master list ---
-        target_list = None
+        
+        # Add to appropriate master data list and model
         if filetype == 'video':
-            target_list = self.completed_videos_data
+            self.completed_videos_data.append(download_info)
+            if self.current_panel_type == 'completed_videos':
+                self.completed_videos_model.addItem(download_info)
         elif filetype == 'audio':
-            target_list = self.completed_audios_data
+            self.completed_audios_data.append(download_info)
+            if self.current_panel_type == 'completed_audios':
+                self.completed_audios_model.addItem(download_info)
         elif filetype == 'playlist':
-            target_list = self.completed_playlists_data
+            self.completed_playlists_data.append(download_info)
+            if self.current_panel_type == 'completed_playlists':
+                self.completed_playlists_model.addItem(download_info)
         else:
-            logger.warning(f"Unknown filetype '{filetype}' for completed download: {url_to_move}")
-            target_list = self.completed_videos_data  # Fallback to video
+            print(f"WARNING: Unknown filetype '{filetype}' for completed download: {download_info.get('url')}")
+            self.completed_videos_data.append(download_info) # Fallback to video
+            if self.current_panel_type == 'completed_videos':
+                self.completed_videos_model.addItem(download_info)
 
-        if not any(d['url'] == url_to_move for d in target_list):
-            target_list.append(download_info)
-
-        # --- FIX: Remove from the active master list ---
-        self.active_downloads_data[:] = [d for d in self.active_downloads_data if d.get('url') != url_to_move]
-
-        self.show_status(f"Download completed: {download_info.get('filename')}", "success")
-
-        # --- FIX: Refresh both potentially affected views ---
-        self.update_active_downloads_display()
-        self.update_completed_display()
+        # Remove from active downloads master list and model
+        self.active_downloads_data[:] = [d for d in self.active_downloads_data if d.get('url') != download_info.get('url')]
+        self.active_downloads_model.removeItem(download_info.get('url'))
+        
         QApplication.processEvents()
 
     # def add_conversion_to_list(self, conversion_info): # Commented out

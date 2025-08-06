@@ -251,32 +251,34 @@ chrome.webRequest.onBeforeRequest.addListener(
 
 // --- Tab Management ---
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'loading' && changeInfo.url) {
-    // Get current tab data
+  // Use the 'tab' object as it's the most reliable source for the URL.
+  const currentUrl = tab.url;
+  
+  // We only care about main page navigations with a complete URL
+  if (changeInfo.status === 'loading' && currentUrl) {
     const tabData = tabMediaState.get(tabId);
     
     if (tabData) {
-      // Check if navigating to a new page (not just hash change)
-      const oldUrlBase = tabData.pageUrl.split('#')[0].split('?')[0];
-      const newUrlBase = changeInfo.url.split('#')[0].split('?')[0];
+      const oldUrlBase = (tabData.pageUrl || '').split('#')[0];
+      const newUrlBase = currentUrl.split('#')[0];
       
+      // If the base URL has changed, it's a new page, so we clear old media.
       if (oldUrlBase !== newUrlBase) {
-        // Clear media for this tab
         tabMediaState.delete(tabId);
         chrome.storage.session.remove(`tab_${tabId}_media`);
         updateBadge(tabId, 0);
       }
     }
     
-    // Update page URL
+    // Update or create the state with the latest definite URL.
     if (!tabMediaState.has(tabId)) {
       tabMediaState.set(tabId, {
-        pageUrl: changeInfo.url,
+        pageUrl: currentUrl,
         media: [],
         lastUpdated: Date.now()
       });
     } else {
-      tabMediaState.get(tabId).pageUrl = changeInfo.url;
+      tabMediaState.get(tabId).pageUrl = currentUrl;
     }
   }
 });

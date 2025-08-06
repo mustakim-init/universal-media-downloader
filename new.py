@@ -2,7 +2,6 @@ import sys
 import os
 import threading
 import subprocess
-import shutil
 import queue
 import re
 import time
@@ -11,39 +10,27 @@ import requests
 from datetime import datetime
 import logging
 import tempfile
-import atexit
-from pathlib import Path
-from http.cookies import SimpleCookie
+from urllib.parse import urlparse, parse_qs
+import random
+import base64
 
-# PySide6 imports are commented out as they are not used in the Flask server context
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QStackedWidget, QScrollArea, QFrame,
-    QFileDialog, QComboBox, QLineEdit, QRadioButton, QButtonGroup,
-    QProgressBar, QSizePolicy, QSpacerItem, QDialog, QGraphicsDropShadowEffect,
-    QCheckBox, QStatusBar, QPlainTextEdit, QSplitter,
-    QTableView, QHeaderView, QAbstractItemView, QStyledItemDelegate, QStyleOptionHeader,
-    QMessageBox
-)
-from PySide6.QtCore import (
-    Qt, QTimer, QPropertyAnimation, QUrl, Signal, QEasingCurve, Property, QModelIndex, QPoint, QSize,
-    QAbstractTableModel, QRect, QPointF, QRectF
-)
-from PySide6.QtGui import QColor, QFont, QDesktopServices, QIcon, QPixmap, QPalette, QPaintEvent, QPainter, QFontMetrics, QPen, QPolygonF, QCursor
-from PySide6.QtWidgets import QStyleOption, QStyle
-from PySide6.QtSvg import QSvgRenderer
+
+# --- Flask Server ---
+from flask import Flask, request, jsonify, g, make_response
+from flask_cors import CORS
+from werkzeug.serving import run_simple
+from werkzeug.middleware.dispatcher import DispatcherMiddleware
+
 
 # --- Configure Logging ---
-# This configures the root logger. All loggers created with getLogger(__name__) will inherit this.
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Set the logging level to DEBUG
+logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Console handler
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
-
 
 # --- Path Helper Function ---
 def resource_path(relative_path):
@@ -54,35 +41,18 @@ def resource_path(relative_path):
         base_path = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_path, relative_path)
 
-# --- Flask Server ---
-from flask import Flask, request, jsonify, g, make_response
-from flask_cors import CORS
-from werkzeug.serving import run_simple
-from werkzeug.middleware.dispatcher import DispatcherMiddleware
-
 # --- Configuration ---
-try:
-    from flask import Flask, request, jsonify, g
-    from flask_cors import CORS
-except ImportError:
-    logger.critical("Flask or Flask-CORS not found. Please install them with 'pip install Flask Flask-Cors'")
-    sys.exit(1)
-
 FLASK_PORT = 5000
 app = Flask(__name__)
 CORS(app)
 
-
 # Message queue for inter-thread communication (Flask to GUI)
 gui_message_queue = queue.Queue()
 
-
 # Path to the yt-dlp executable
-# For a PyInstaller build, this would be in a temp directory
 if getattr(sys, 'frozen', False):
     YTDLP_PATH = os.path.join(sys._MEIPASS, 'yt-dlp')
 else:
-    # Assuming yt-dlp is in the PATH or the same directory for development
     YTDLP_PATH = 'yt-dlp'
 
 startupinfo = None
@@ -91,18 +61,255 @@ if sys.platform == 'win32':
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = subprocess.SW_HIDE
 
-# Use DEVNULL for subprocess stdout/stderr where we do NOT want it to appear in the terminal
+# Use DEVNULL for subprocess stdout/stderr
 DEVNULL = subprocess.DEVNULL
-
 SUBPROCESS_CREATION_FLAGS = subprocess.DETACHED_PROCESS if sys.platform == 'win32' else 0
 
 YT_DLP_BIN = resource_path('yt-dlp.exe') if sys.platform == 'win32' else resource_path('yt-dlp')
 FFMPEG_BIN = resource_path(os.path.join('ffmpeg', 'bin', 'ffmpeg.exe')) if sys.platform == 'win32' else resource_path(os.path.join('ffmpeg', 'bin', 'ffmpeg'))
 EXTENSION_SOURCE_DIR_BUNDLE = resource_path('extension')
 
+# --- Smart User Agent Manager ---
+class UserAgentManager:
+    """Manages user agents for different platforms"""
+    
+    USER_AGENTS = {
+        'chrome_windows': [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        ],
+        'firefox_windows': [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:119.0) Gecko/20100101 Firefox/119.0',
+        ],
+        'safari_mac': [
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+        ]
+    }
+    
+    @classmethod
+    def get_random_user_agent(cls, platform_hint=None):
+        """Get a random user agent, optionally filtered by platform"""
+        if platform_hint:
+            agents = cls.USER_AGENTS.get(platform_hint, cls.USER_AGENTS['chrome_windows'])
+        else:
+            all_agents = []
+            for agents_list in cls.USER_AGENTS.values():
+                all_agents.extend(agents_list)
+            agents = all_agents
+        return random.choice(agents)
 
+# --- Enhanced URL Intelligence ---
+class URLAnalyzer:
+    """Enhanced URL analyzer with platform-specific handling"""
+    
+    # Platform-specific patterns and requirements
+    PLATFORM_CONFIG = {
+        'facebook': {
+            'patterns': [r'facebook\.com', r'fb\.watch'],
+            'temp_patterns': [r'fbcdn\.net', r'video.*\.xx\.fbcdn\.net'],
+            'needs_cookies': True,
+            'required_headers': ['User-Agent', 'Accept-Language'],
+            'user_agent_type': 'chrome_windows'
+        },
+        'instagram': {
+            'patterns': [r'instagram\.com'],
+            'temp_patterns': [r'instagram.*\.fbcdn\.net', r'scontent.*\.cdninstagram\.com'],
+            'needs_cookies': True,
+            'required_headers': ['User-Agent', 'Accept-Language', 'X-IG-App-ID'],
+            'user_agent_type': 'chrome_windows'
+        },
+        'youtube': {
+            'patterns': [r'youtube\.com', r'youtu\.be', r'googlevideo\.com'],
+            'temp_patterns': [r'googlevideo\.com/videoplayback'],
+            'needs_cookies': False,
+            'required_headers': ['User-Agent'],
+            'user_agent_type': 'chrome_windows'
+        },
+        'twitter': {
+            'patterns': [r'twitter\.com', r'x\.com'],
+            'temp_patterns': [r'video\.twimg\.com'],
+            'needs_cookies': True,
+            'required_headers': ['User-Agent', 'Authorization'],
+            'user_agent_type': 'chrome_windows'
+        },
+        'tiktok': {
+            'patterns': [r'tiktok\.com'],
+            'temp_patterns': [r'muscdn\.com', r'tiktokcdn\.com'],
+            'needs_cookies': True,
+            'required_headers': ['User-Agent', 'Referer'],
+            'user_agent_type': 'chrome_windows'
+        }
+    }
+    
+    @classmethod
+    def detect_platform(cls, url):
+        """Detect which platform a URL belongs to"""
+        url_lower = url.lower()
+        for platform, config in cls.PLATFORM_CONFIG.items():
+            if any(re.search(pattern, url_lower) for pattern in config['patterns']):
+                return platform
+        return 'generic'
+    
+    @classmethod
+    def is_temporary_url(cls, url):
+        """Enhanced temporary URL detection"""
+        url_lower = url.lower()
+        
+        # Generic temporary patterns
+        generic_patterns = [
+            r'blob:', r'\.m3u8(\?|$)', r'\.mpd(\?|$)', r'manifest\.',
+            r'videoplayback\?', r'/hls/', r'/dash/'
+        ]
+        
+        if any(re.search(pattern, url_lower) for pattern in generic_patterns):
+            return True
+        
+        # Platform-specific temporary patterns
+        for platform, config in cls.PLATFORM_CONFIG.items():
+            temp_patterns = config.get('temp_patterns', [])
+            if any(re.search(pattern, url_lower) for pattern in temp_patterns):
+                return True
+        
+        return False
+    
+    @classmethod
+    def needs_cookies(cls, url):
+        """Determine if URL needs cookies"""
+        platform = cls.detect_platform(url)
+        if platform in cls.PLATFORM_CONFIG:
+            return cls.PLATFORM_CONFIG[platform]['needs_cookies']
+        
+        # Default behavior for unknown platforms
+        return cls.is_temporary_url(url)
+    
+    @classmethod
+    def get_platform_config(cls, url):
+        """Get platform-specific configuration"""
+        platform = cls.detect_platform(url)
+        return cls.PLATFORM_CONFIG.get(platform, {
+            'needs_cookies': False,
+            'required_headers': ['User-Agent'],
+            'user_agent_type': 'chrome_windows'
+        })
 
-# --- Settings Manager (Replaces global variables) ---
+# --- Enhanced Cookie Manager ---
+class CookieManager:
+    """Enhanced cookie management with validation and filtering"""
+    
+    ESSENTIAL_COOKIE_PATTERNS = {
+        'facebook': [r'c_user', r'xs', r'datr', r'sb', r'fr'],
+        'instagram': [r'sessionid', r'csrftoken', r'ds_user_id', r'shbid', r'rur'],
+        'youtube': [r'VISITOR_INFO1_LIVE', r'YSC', r'PREF'],
+        'twitter': [r'auth_token', r'ct0', r'personalization_id'],
+        'tiktok': [r'sessionid', r'tt_csrf_token', r'tt_webid']
+    }
+    
+    @classmethod
+    def filter_essential_cookies(cls, cookies, platform):
+        """Filter cookies to only essential ones for the platform"""
+        if not cookies or platform not in cls.ESSENTIAL_COOKIE_PATTERNS:
+            return cookies
+        
+        essential_patterns = cls.ESSENTIAL_COOKIE_PATTERNS[platform]
+        filtered_cookies = []
+        
+        for cookie in cookies:
+            cookie_name = cookie.get('name', '').lower()
+            if any(re.search(pattern.lower(), cookie_name) for pattern in essential_patterns):
+                filtered_cookies.append(cookie)
+        
+        logger.info(f"Filtered {len(cookies)} cookies to {len(filtered_cookies)} essential ones for {platform}")
+        return filtered_cookies if filtered_cookies else cookies  # Fallback to all cookies if no essential ones found
+    
+    @classmethod
+    def validate_cookies(cls, cookies):
+        """Validate and clean cookies"""
+        if not cookies:
+            return []
+        
+        valid_cookies = []
+        current_time = time.time()
+        
+        for cookie in cookies:
+            # Skip expired cookies
+            expiry = cookie.get('expirationDate')
+            if expiry and expiry < current_time:
+                continue
+            
+            # Ensure required fields
+            if not cookie.get('name') or not cookie.get('domain'):
+                continue
+            
+            # Clean the cookie
+            cleaned_cookie = {
+                'name': str(cookie['name']),
+                'value': str(cookie.get('value', '')),
+                'domain': cookie['domain'],
+                'path': cookie.get('path', '/'),
+                'secure': cookie.get('secure', False),
+                'httpOnly': cookie.get('httpOnly', False),
+                'expirationDate': expiry
+            }
+            
+            valid_cookies.append(cleaned_cookie)
+        
+        return valid_cookies
+    
+    @classmethod
+    def convert_to_netscape(cls, cookies):
+        """Convert cookies to Netscape format with better formatting"""
+        if not cookies:
+            return ""
+        
+        netscape_cookies = [
+            "# Netscape HTTP Cookie File",
+            "# This file was generated by Universal Media Downloader",
+            "# Enhanced cookie format for better compatibility",
+            ""
+        ]
+        
+        for cookie in cookies:
+            try:
+                domain = cookie.get('domain', '').strip()
+                if not domain:
+                    continue
+                
+                # Ensure proper domain format
+                if not domain.startswith('.') and not domain.startswith('http'):
+                    domain = '.' + domain
+                
+                include_subdomains = 'TRUE'
+                path = cookie.get('path', '/')
+                secure = 'TRUE' if cookie.get('secure') else 'FALSE'
+                
+                # Handle expiration
+                expires = cookie.get('expirationDate')
+                if expires is None:
+                    expires_int = 0  # Session cookie
+                else:
+                    expires_int = int(float(expires))
+                
+                name = cookie.get('name', '')
+                value = str(cookie.get('value', ''))
+                
+                # Escape special characters in value
+                value = value.replace('\t', '\\t').replace('\n', '\\n').replace('\r', '\\r')
+                
+                cookie_line = "\t".join([
+                    domain, include_subdomains, path, secure, 
+                    str(expires_int), name, value
+                ])
+                netscape_cookies.append(cookie_line)
+                
+            except Exception as e:
+                logger.warning(f"Skipping invalid cookie: {e}")
+                continue
+        
+        return "\n".join(netscape_cookies)
+
+# --- Settings Manager ---
 class SettingsManager:
     def __init__(self):
         self._lock = threading.Lock()
@@ -110,94 +317,154 @@ class SettingsManager:
             'browser_monitor_enabled': True,
             'download_save_directory': os.path.join(os.path.expanduser("~"), 'Downloads'),
             'overwrite_existing_file': False,
-            'double_click_action': "Open folder"
+            'double_click_action': "Open folder",
+            'use_cookies_smartly': True,
+            'retry_attempts': 3,
+            'use_fallback_methods': True
         }
         # Ensure download directory exists on startup
         if not os.path.exists(self._settings['download_save_directory']):
             os.makedirs(self._settings['download_save_directory'], exist_ok=True)
-    
+
     def get(self, key):
         with self._lock:
             return self._settings.get(key)
-    
+
     def set(self, key, value):
         with self._lock:
             self._settings[key] = value
             logger.info(f"Setting '{key}' updated to: {value}")
 
-settings = SettingsManager() # This creates the global settings instance
-# --- END Settings Manager ---
+settings = SettingsManager()
 
-
-# Ensure binaries exist (for debugging during development)
+# Ensure binaries exist
 if not os.path.exists(YT_DLP_BIN):
-    print(f"WARNING: yt-dlp binary not found at {YT_DLP_BIN}. Please ensure it's in the correct location or bundled.")
+    logger.warning(f"yt-dlp binary not found at {YT_DLP_BIN}.")
 if not os.path.exists(FFMPEG_BIN):
-    print(f"WARNING: ffmpeg binary not found at {FFMPEG_BIN}. Please ensure it's in the correct location or bundled.")
+    logger.warning(f"ffmpeg binary not found at {FFMPEG_BIN}.")
 
-
-
-def convert_cookies_to_netscape(cookies):
-    """
-    Converts a list of cookie dictionaries from the browser into a string
-    in the Netscape cookie file format, which is required by yt-dlp.
-    """
-    if not cookies:
-        return ""
-
-    netscape_cookies = ["# Netscape HTTP Cookie File"]
-    for cookie in cookies:
-        domain = cookie.get('domain', '').strip('.')
-        if not domain:
-            continue
-        
-        include_subdomains = 'TRUE' if domain.startswith('.') else 'FALSE'
-        path = cookie.get('path', '/')
-        secure = 'TRUE' if cookie.get('secure') else 'FALSE'
-        
-        expires_float = cookie.get('expirationDate')
-        expires_int = int(expires_float) if expires_float is not None else 0
-
-        name = cookie.get('name', '')
-        value = str(cookie.get('value', ''))
-
-        netscape_cookies.append(
-            "\t".join([domain, include_subdomains, path, secure, str(expires_int), name, value])
-        )
-    return "\n".join(netscape_cookies)
-
-
-def run_yt_dlp_command(args, cookies=None, timeout=None):
-    """
-    Runs a yt-dlp command and returns the stdout and stderr.
-    This function handles the creation and cleanup of the temporary cookie file.
-    **FIX:** Added a timeout parameter.
-    """
+def run_yt_dlp_command(args, cookies=None, timeout=None, platform_config=None, retry_count=0):
+    """Enhanced yt-dlp command runner with smart retry logic"""
     temp_cookie_file_path = None
+    env = os.environ.copy()
+    max_retries = settings.get('retry_attempts')
+    
     try:
+        # Get platform-specific user agent
+        if platform_config:
+            user_agent_type = platform_config.get('user_agent_type', 'chrome_windows')
+            user_agent = UserAgentManager.get_random_user_agent(user_agent_type)
+        else:
+            user_agent = UserAgentManager.get_random_user_agent()
+        
+        # Enhanced base arguments
+        base_args = [
+            '--no-check-certificate',
+            '--no-warnings',
+            '--user-agent', user_agent,
+            '--add-header', 'Accept-Language:en-US,en;q=0.9',
+            '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            '--add-header', 'Accept-Encoding:gzip, deflate',
+            '--add-header', 'DNT:1',
+            '--add-header', 'Connection:keep-alive',
+            '--socket-timeout', '60',
+            '--retries', '3'
+        ]
+        
+        # Add platform-specific headers
+        if platform_config:
+            required_headers = platform_config.get('required_headers', [])
+            if 'X-IG-App-ID' in required_headers:
+                base_args.extend(['--add-header', 'X-IG-App-ID:936619743392459'])
+            if 'Referer' in required_headers and 'tiktok' in str(args):
+                base_args.extend(['--add-header', 'Referer:https://www.tiktok.com/'])
+        
+        # Handle cookies with validation and filtering
         if cookies:
-            netscape_cookies_str = convert_cookies_to_netscape(cookies)
-            if netscape_cookies_str:
-                with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8', suffix=".txt") as temp_f:
-                    temp_f.write(netscape_cookies_str)
-                    temp_cookie_file_path = temp_f.name
-                args.extend(['--cookies', temp_cookie_file_path])
-            else:
-                logger.warning("No valid cookies found to write to file.")
-
-        command = [YT_DLP_BIN] + args
-        logger.debug(f"Running yt-dlp command: {' '.join(command)}")
-
-        result = subprocess.run(command, capture_output=True, text=True, check=False, startupinfo=startupinfo, timeout=timeout)
-
+            # Validate cookies first
+            valid_cookies = CookieManager.validate_cookies(cookies)
+            
+            # Filter to essential cookies if we have platform info
+            if platform_config and 'platform' in platform_config:
+                valid_cookies = CookieManager.filter_essential_cookies(
+                    valid_cookies, platform_config['platform']
+                )
+            
+            if valid_cookies:
+                netscape_cookies_str = CookieManager.convert_to_netscape(valid_cookies)
+                if netscape_cookies_str:
+                    fd, temp_cookie_file_path = tempfile.mkstemp(suffix='.txt', text=True)
+                    try:
+                        with os.fdopen(fd, 'w', encoding='utf-8') as temp_f:
+                            temp_f.write(netscape_cookies_str)
+                        
+                        if sys.platform != 'win32':
+                            os.chmod(temp_cookie_file_path, 0o600)
+                        
+                        base_args.extend(['--cookies', temp_cookie_file_path])
+                        logger.debug(f"Using {len(valid_cookies)} cookies from file: {temp_cookie_file_path}")
+                    except Exception as e:
+                        logger.error(f"Error writing cookie file: {e}")
+                        if temp_cookie_file_path and os.path.exists(temp_cookie_file_path):
+                            os.unlink(temp_cookie_file_path)
+                        raise
+        
+        # Combine arguments
+        command = [YT_DLP_BIN] + base_args + args
+        
+        logger.debug(f"Running yt-dlp (attempt {retry_count + 1}/{max_retries + 1}): {' '.join(command[:5])}...")
+        
+        # Enhanced environment
+        env.update({
+            'PYTHONIOENCODING': 'utf-8',
+            'LANG': 'en_US.UTF-8',
+            'LC_ALL': 'en_US.UTF-8'
+        })
+        
+        result = subprocess.run(
+            command, 
+            capture_output=True, 
+            text=True, 
+            check=False, 
+            startupinfo=startupinfo, 
+            timeout=timeout,
+            env=env
+        )
+        
+        # Enhanced error handling with retry logic
         if result.returncode != 0:
-            logger.error(f"yt-dlp command failed with exit code {result.returncode}")
-            logger.error(f"yt-dlp stderr: {result.stderr}")
+            error_msg = result.stderr.lower() if result.stderr else ""
+            
+            # Check if we should retry
+            should_retry = (
+                retry_count < max_retries and
+                settings.get('use_fallback_methods') and
+                any(error_phrase in error_msg for error_phrase in [
+                    '403', 'forbidden', 'unauthorized', 'private', 'requires login',
+                    'unable to download', 'http error', 'connection', 'timeout'
+                ])
+            )
+            
+            if should_retry:
+                logger.warning(f"Attempt {retry_count + 1} failed, retrying with different approach...")
+                time.sleep(2 ** retry_count)  # Exponential backoff
+                
+                # FIX: Removed the broken --extract-flat logic that was here
+                # On retry, we'll just use the same arguments but with a fresh connection.
+                modified_args = args.copy()
+                
+                return run_yt_dlp_command(
+                    modified_args, cookies, timeout, platform_config, retry_count + 1
+                )
+            
+            logger.error(f"yt-dlp command failed after {retry_count + 1} attempts with exit code {result.returncode}")
+            logger.error(f"Stderr: {result.stderr}")
             return None, result.stderr
         
         return result.stdout, result.stderr
+        
     except FileNotFoundError:
-        error_msg = f"yt-dlp executable not found at {YT_DLP_BIN}. Please ensure it's bundled correctly."
+        error_msg = f"yt-dlp executable not found at {YT_DLP_BIN}."
         logger.error(error_msg)
         return None, error_msg
     except subprocess.TimeoutExpired:
@@ -206,8 +473,11 @@ def run_yt_dlp_command(args, cookies=None, timeout=None):
         return None, error_msg
     finally:
         if temp_cookie_file_path and os.path.exists(temp_cookie_file_path):
-            os.remove(temp_cookie_file_path)
-
+            try:
+                os.unlink(temp_cookie_file_path)
+                logger.debug(f"Cleaned up cookie file: {temp_cookie_file_path}")
+            except Exception as e:
+                logger.error(f"Error removing cookie file: {e}")
 
 @app.after_request
 def after_request(response):
@@ -217,425 +487,187 @@ def after_request(response):
     header['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     return response
 
-
-# --- Helper Function for Running yt-dlp/ffmpeg Commands ---
-def run_command_in_bundle(command_parts, capture_output=False, text=False, timeout=None, check=True, **kwargs):
-    """
-    Runs a subprocess command, ensuring yt-dlp and ffmpeg paths are used.
-    Handles common subprocess.run arguments explicitly.
-    """
+def run_command_in_bundle(command_parts, **kwargs):
+    """Runs a subprocess command, ensuring yt-dlp and ffmpeg paths are used."""
     env_vars = os.environ.copy()
     ffmpeg_dir = os.path.dirname(FFMPEG_BIN)
     if ffmpeg_dir not in env_vars.get('PATH', '').split(os.pathsep):
         env_vars['PATH'] = ffmpeg_dir + os.pathsep + env_vars.get('PATH', '')
-
     if command_parts and command_parts[0] == 'yt-dlp':
         command_parts[0] = YT_DLP_BIN
-    
-    logger.debug(f"Running command: {' '.join(command_parts)}")
-
+    logger.debug(f"Running command: {' '.join(command_parts[:3])}...")
     try:
-        return subprocess.run(
-            command_parts,
-            capture_output=capture_output,
-            text=text,
-            timeout=timeout,
-            check=check,
-            env=env_vars,
-            startupinfo=startupinfo,
-            creationflags=SUBPROCESS_CREATION_FLAGS,
-            **kwargs
-        )
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Command failed with exit code {e.returncode}: {e.cmd}")
-        logger.error(f"STDOUT: {e.stdout}")
-        logger.error(f"STDERR: {e.stderr}")
+        return subprocess.run(command_parts, env=env_vars, startupinfo=startupinfo, creationflags=SUBPROCESS_CREATION_FLAGS, **kwargs)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+        logger.error(f"Command execution error: {e}")
         raise
-    except subprocess.TimeoutExpired as e:
-        logger.error(f"Command timed out after {e.timeout} seconds: {e.cmd}")
-        raise
-    except FileNotFoundError:
-        logger.error(f"Command not found. Ensure '{command_parts[0]}' exists and is executable.")
-        raise
-    except Exception as e:
-        logger.exception(f"An unexpected error occurred while running command: {command_parts}")
-        raise
-
-
-
-@app.route("/health", methods=["GET"])
-def health_check():
-    """Endpoint for health checks."""
-    return jsonify({"status": "healthy"})
-
-
-@app.route('/shutdown', methods=['POST'])
-def shutdown():
-    """Shuts down the Flask server."""
-    func = request.environ.get('werkzeug.server.shutdown')
-    if func is None:
-        logger.info('Werkzeug server shutdown function not found. Signalling Flask thread to exit gracefully.')
-        raise SystemExit("Flask server requested shutdown.") 
-    logger.info('Flask server shutting down via Werkzeug...')
-    func()
-    return jsonify({'status': 'success', 'message': 'Server shutting down...'}), 200
-
-
-
-@app.route("/get_formats", methods=["POST"])
-def get_formats():
-    """
-    Endpoint to get available formats for a given URL using yt-dlp.
-    It expects a JSON payload with 'url', 'mediaType', and 'cookies' fields.
-    """
-    try:
-        data = request.json
-        url = data.get("url")
-        cookies = data.get("cookies")
-        
-        if not url:
-            return jsonify({"error": "URL is required"}), 400
-
-        logger.info(f"Received request to get formats for URL: {url}")
-
-        args = ["--list-formats", "--ignore-errors", url]
-        # **FIX:** Use a 15-second timeout to prevent the request from hanging
-        stdout, stderr = run_yt_dlp_command(args, cookies, timeout=15)
-
-        if stdout:
-            formats = stdout.strip().split('\n')
-            parsed_formats = []
-            header_found = False
-            for line in formats:
-                if 'ID' in line and 'ext' in line:
-                    header_found = True
-                    continue
-                if not header_found or not line.strip() or line.strip().startswith('['):
-                    continue
-                
-                parts = line.split()
-                if len(parts) >= 3:
-                    format_id = parts[0]
-                    ext = parts[1]
-                    res = parts[2]
-                    note = ' '.join(parts[3:]) if len(parts) > 3 else ''
-                    parsed_formats.append({
-                        "id": format_id,
-                        "ext": ext,
-                        "resolution": res,
-                        "note": note.strip()
-                    })
-
-            return jsonify({"formats": parsed_formats})
-        else:
-            # **FIX:** Provide better user-facing error messages
-            user_error = "Failed to retrieve formats. Please check the URL."
-            if stderr:
-                if "login" in stderr.lower():
-                    user_error = "This content requires a login. Ensure you are logged in."
-                elif "Unsupported URL" in stderr:
-                    user_error = "This website or URL is not supported."
-                elif "timed out" in stderr:
-                    user_error = "Request timed out. The server may be slow or the URL is invalid."
-            
-            return jsonify({"error": user_error, "details": stderr}), 500
-
-    except Exception as e:
-        logger.error(f"An unexpected error occurred in get_formats: {e}", exc_info=True)
-        return jsonify({"error": "An internal server error occurred."}), 500
-
-@app.route("/download", methods=["POST"])
-def download():
-    """
-    Endpoint to start a download using yt-dlp.
-    This now uses the main application's robust download logic.
-    """
-    try:
-        data = request.json
-        url = data.get("url")
-        format_id = data.get("format_id")
-        media_type = data.get("media_type")
-        cookies = data.get("cookies")
-
-        if not url:
-            return jsonify({"error": "URL is required"}), 400
-
-        logger.info(f"Received download request from extension for URL: {url} with format: {format_id}")
-
-        # **FIX:** Unify download logic with the main GUI's function
-        # This will now create a proper download entry with progress in the app
-        command_template = [YT_DLP_BIN]
-        if format_id and format_id != "highest":
-            command_template.extend(["-f", format_id])
-        elif media_type == "video":
-            command_template.extend(["-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"])
-        elif media_type == "audio":
-            command_template.extend(["-x", "--audio-format", "mp3"])
-        
-        command_template.append(url)
-        
-        is_playlist = 'playlist?list=' in url or '/playlist/' in url
-        download_dir = settings.get('download_save_directory')
-        cancel_event = threading.Event()
-        
-        # Convert browser cookies to the Netscape string format for the thread
-        cookie_string = convert_cookies_to_netscape(cookies)
-
-        # Add the download info to the GUI queue immediately
-        gui_message_queue.put({
-            'type': 'add_download',
-            'url': url,
-            'status': 'Queued',
-            'filename': url.split('/')[-1].split('?')[0] or 'download',
-            'timestamp': time.time(),
-            'cancel_event': cancel_event
-        })
-
-        # Start the robust download thread
-        threading.Thread(
-            target=_perform_yt_dlp_download,
-            args=(
-                command_template, url, is_playlist, media_type,
-                False, download_dir, cancel_event, cookie_string
-            ),
-            daemon=True
-        ).start()
-        
-        return jsonify({"message": "Download sent to the desktop app!"})
-            
-    except Exception as e:
-        logger.error(f"An unexpected error occurred in /download: {e}", exc_info=True)
-        return jsonify({"error": "Internal server error"}), 500
-
-
-def start_flask_server():
-    """Starts the Flask server."""
-    try:
-        app_wrapper = DispatcherMiddleware(app)
-        run_simple('127.0.0.1', FLASK_PORT, app_wrapper, use_reloader=False, use_debugger=False)
-    except Exception as e:
-        logger.critical(f"Failed to start Flask server: {e}")
-        gui_message_queue.put({'type': 'exit'})
-
-
-def wait_for_flask_server(max_retries=20, delay=0.2):
-    """Wait for Flask server to be ready by polling the health endpoint."""
-    for i in range(max_retries):
-        try:
-            response = requests.get(f"http://localhost:{FLASK_PORT}/health", timeout=0.1)
-            if response.status_code == 200 and response.json().get('status') == 'healthy':
-                logger.info(f"Flask server is ready after {i+1} retries.")
-                return True
-        except requests.exceptions.ConnectionError:
-            logger.debug(f"Attempt {i+1}/{max_retries}: Flask server not yet reachable.")
-        except requests.exceptions.Timeout:
-            logger.debug(f"Attempt {i+1}/{max_retries}: Flask health check timed out.")
-        except Exception as e:
-            logger.error(f"Error during Flask server health check: {e}")
-        time.sleep(delay)
-    logger.error(f"Flask server did not become ready after {max_retries} retries. Exiting.")
-    return False
-
-
-# Helper function to parse filesize string (e.g., "1.23MiB") to bytes
-def parse_filesize_to_bytes(filesize_str):
-    if not isinstance(filesize_str, str):
-        return 0
-    filesize_str = filesize_str.strip().upper()
-    if filesize_str == 'N/A':
-        return 0
-
-    match = re.match(r'~?([\d.]+)([KMGTPE]?IB)', filesize_str)
-    if not match:
-        return 0
-
-    value = float(match.group(1))
-    unit = match.group(2)
-
-    multipliers = {
-        'B': 1, 'KIB': 1024, 'MIB': 1024**2, 'GIB': 1024**3,
-        'TIB': 1024**4, 'PIB': 1024**5, 'EIB': 1024**6
-    }
-    return int(value * multipliers.get(unit, 1))
-
-# Helper function to format bytes to human-readable string
-def format_bytes(bytes_val):
-    if bytes_val == 0:
-        return "0 B"
-    units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB', 'EiB']
-    i = 0
-    while bytes_val >= 1024 and i < len(units) - 1:
-        bytes_val /= 1024
-        i += 1
-    return f"{bytes_val:.2f} {units[i]}"
 
 def sanitize_filename(filename):
     """Sanitize filename for the current OS."""
+    if not filename:
+        return "download"
+    
+    # Remove query parameters and fragments
+    filename = filename.split('?')[0].split('#')[0]
+    
     invalid_chars_regex = r'[<>:"/\\|?*\x00-\x1F]'
     sanitized = re.sub(invalid_chars_regex, '_', filename)
-
     if sys.platform == 'win32':
         reserved_names = re.compile(r'^(con|prn|aux|nul|com[1-9]|lpt[1-9])$', re.IGNORECASE)
         name_without_ext = os.path.splitext(sanitized)[0]
         if reserved_names.match(name_without_ext):
             sanitized = '_' + sanitized
         sanitized = sanitized.rstrip('. ')
-
-    max_length = 200  
+    max_length = 200
     if len(sanitized) > max_length:
         name, ext = os.path.splitext(sanitized)
         sanitized = name[:max_length - len(ext)] + ext
-    
-    return sanitized
+    return sanitized or "download"
 
-
-
-def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_merged_download, download_dir, cancel_event, cookie_string=None):
-    """
-    Performs the yt-dlp download operation in a separate thread.
-    """
-    filename_base = "Playlist Download" if is_playlist else os.path.basename(url) 
-    final_downloaded_file_path = None
-    detected_filetype = 'unknown' 
-    filename = filename_base
-    stdout_lines = []
-    stderr_lines = []
+def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_merged_download, download_dir, cancel_event, cookie_string=None, platform_config=None):
+    """Enhanced download with platform-specific handling"""
+    filename = "Playlist Download" if is_playlist else os.path.basename(url)
     current_process = None
     temp_cookie_file = None
-
+    
     try:
-        # --- CORRECTED LOGIC ---
-        # Determine cookie arguments based on whether a cookie_string was provided.
-        # If no cookie_string, cookie_args will be empty.
+        # Build enhanced command with platform-specific optimizations
+        enhanced_command = command_template.copy()
+        
+        # Add platform-specific arguments
+        if platform_config:
+            user_agent = UserAgentManager.get_random_user_agent(
+                platform_config.get('user_agent_type', 'chrome_windows')
+            )
+            enhanced_command.extend(['--user-agent', user_agent])
+            
+            # Add platform-specific headers
+            required_headers = platform_config.get('required_headers', [])
+            enhanced_command.extend(['--add-header', 'Accept-Language:en-US,en;q=0.9'])
+            
+            if 'X-IG-App-ID' in required_headers:
+                enhanced_command.extend(['--add-header', 'X-IG-App-ID:936619743392459'])
+            if 'Referer' in required_headers and 'tiktok' in url.lower():
+                enhanced_command.extend(['--add-header', 'Referer:https://www.tiktok.com/'])
+        
+        # Handle cookies with enhanced processing
         cookie_args = []
         if cookie_string:
-            with tempfile.NamedTemporaryFile(mode='w', delete=False, encoding='utf-8', suffix='.txt') as f:
-                f.write(cookie_string)
-                temp_cookie_file = f.name
-            cookie_args = ['--cookies', temp_cookie_file]
-            logger.info(f"Using provided cookies from file for download: {url}")
-        # --- The incorrect 'else' block has been removed. ---
-
-        info_command = [
-            YT_DLP_BIN,
-            '--get-filename',
-            *cookie_args, # Use the determined cookie arguments (will be empty if no cookies)
-            '-o', '%(title)s.%(ext)s',
-            url
-        ]
-        if not is_playlist:
-            info_command.insert(1, '--no-playlist')
-
-        info_result = run_command_in_bundle(
-            info_command,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15
-        )
-        predicted_filename_raw = info_result.stdout.strip()
-        predicted_filename = sanitize_filename(predicted_filename_raw)
+            fd, temp_cookie_file = tempfile.mkstemp(suffix='.txt', text=True)
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    f.write(cookie_string)
+                if sys.platform != 'win32':
+                    os.chmod(temp_cookie_file, 0o600)
+                cookie_args = ['--cookies', temp_cookie_file]
+                logger.info(f"Using enhanced cookies for download: {url}")
+            except Exception as e:
+                logger.error(f"Error creating cookie file: {e}")
+                if temp_cookie_file and os.path.exists(temp_cookie_file):
+                    os.unlink(temp_cookie_file)
+                raise
         
-        if not predicted_filename and info_result.returncode != 0:
-            error_detail = f"STDOUT: {info_result.stdout.strip()}\nSTDERR: {info_result.stderr.strip()}"
-            raise Exception(f"Failed to predict filename (exit code {info_result.returncode}):\n{error_detail}")
-        
-        if not is_playlist:
+        # --- FIX #3: Overhauled path and filename prediction ---
+        predicted_filename = filename
+        final_output_path = ""  # Will store the final path for verification
+
+        if is_playlist:
+            # For playlists, get the playlist title to use as a directory name
+            info_command = [YT_DLP_BIN, '--get-filename', '--no-warnings', *cookie_args, '-o', '%(playlist_title)s', '--playlist-end', '1', url]
+            info_result = run_command_in_bundle(info_command, capture_output=True, text=True, check=False, timeout=30)
+            
+            raw_title = info_result.stdout.strip().split('\n')[0] if info_result.stdout.strip() else "Playlist"
+            predicted_filename = sanitize_filename(raw_title)
+            filename = predicted_filename  # This name is sent to the GUI
+            
+            # The output template uses the predicted directory name
+            final_output_template = os.path.join(download_dir, predicted_filename, '%(title)s.%(ext)s')
+            # The path to verify later is the directory itself
+            final_output_path = os.path.join(download_dir, predicted_filename)
+            # Ensure the target directory for the playlist exists, as yt-dlp can fail on this
+            os.makedirs(os.path.dirname(final_output_template), exist_ok=True)
+        else:  # For single files
+            info_command = [YT_DLP_BIN, '--get-filename', '--no-warnings', *cookie_args, '-o', '%(title)s.%(ext)s', '--no-playlist', url]
+            info_result = run_command_in_bundle(info_command, capture_output=True, text=True, check=False, timeout=30)
+            
+            predicted_filename_raw = info_result.stdout.strip()
+            if predicted_filename_raw and predicted_filename_raw != 'NA':
+                predicted_filename = sanitize_filename(predicted_filename_raw)
+            else:
+                # *** NEW: Smart fallback for direct media URLs without a title ***
+                try:
+                    # Attempt to parse the URL and get a cleaner name from the path
+                    parsed_url = urlparse(url)
+                    base_name_from_path = os.path.basename(parsed_url.path)
+                    # If the name is useful (not a hash, has an extension), use it
+                    if base_name_from_path and '.' in base_name_from_path:
+                         predicted_filename = sanitize_filename(base_name_from_path)
+                    else:
+                        # Otherwise, create a clean, timestamped generic name
+                        predicted_filename = f"media_download_{int(time.time())}"
+                except Exception:
+                    # Final fallback if parsing fails for any reason
+                    predicted_filename = f"media_download_{int(time.time())}"
+            
+            filename = predicted_filename # This name is sent to the GUI
+
+            # Handle existing files for single downloads
             base_name, ext = os.path.splitext(predicted_filename)
-            ext = ext.lstrip('.')
-            current_filename = predicted_filename
+
+            if not ext:
+                ext = '.mp4' if media_type == 'video' else '.mp3'
+            current_filename = base_name + ext
             counter = 0
             while not settings.get('overwrite_existing_file') and os.path.exists(os.path.join(download_dir, current_filename)):
                 counter += 1
-                current_filename = f"{base_name} ({counter}).{ext}"
+                current_filename = f"{base_name} ({counter}){ext}"
+            
             final_output_template = os.path.join(download_dir, current_filename)
-            filename = current_filename
-        else:
-            final_output_template = os.path.join(download_dir, '%(playlist_title)s/%(title)s.%(ext)s')
-            if '--yes-playlist' not in command_template:
-                try:
-                    url_index = command_template.index(url)
-                    command_template.insert(url_index, '--yes-playlist')
-                except ValueError:
-                    command_template.insert(1, '--yes-playlist') 
+            final_output_path = final_output_template  # The path to verify is the file itself
+            filename = current_filename  # This name is sent to the GUI
 
-        output_arg_index = -1
-        for i, arg in enumerate(command_template):
-            if arg == '-o' and i + 1 < len(command_template):
-                output_arg_index = i + 1
-                break
+        enhanced_command.extend(['-o', final_output_template])
         
-        if output_arg_index != -1:
-            command_template[output_arg_index] = final_output_template
-        else:
-            command_template.extend(['-o', final_output_template])
-
-        gui_message_queue.put({
-            'type': 'update_download_status', 
-            'url': url, 
-            'filename': filename, 
-            'status': 'Initializing'
-        })
-
-        final_command = list(command_template)
-        try:
-            url_index = final_command.index(url)
-            final_command[url_index:url_index] = cookie_args
-        except ValueError:
-            final_command[1:1] = cookie_args
+        # Add anti-detection measures
+        enhanced_command.extend([
+            '--no-check-certificate',
+            '--no-warnings',
+            '--socket-timeout', '60',
+            '--retries', '3'
+        ])
         
-        if '--no-playlist' in final_command:
-            final_command.remove('--no-playlist')
-        if '--yes-playlist' in final_command:
-            final_command.remove('--yes-playlist')
-
-        if not is_playlist:
-            if '--no-playlist' not in final_command:
-                final_command.insert(1, '--no-playlist')
-        elif is_playlist:
-            if '--yes-playlist' not in final_command:
-                final_command.insert(1, '--yes-playlist')
+        gui_message_queue.put({'type': 'update_download_status', 'url': url, 'filename': filename, 'status': 'Initializing'})
+        
+        # Insert cookie args and run process
+        final_command = enhanced_command[:1] + cookie_args + enhanced_command[1:]
         
         current_process = subprocess.Popen(
-            final_command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
-            creationflags=SUBPROCESS_CREATION_FLAGS,
+            final_command, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE, 
+            text=True, 
+            bufsize=1, 
+            universal_newlines=True, 
+            creationflags=SUBPROCESS_CREATION_FLAGS, 
             startupinfo=startupinfo
         )
-        gui_message_queue.put({
-            'type': 'register_process',
-            'url': url, 
-            'process': current_process, 
-            'cancel_event': cancel_event
-        }) 
         
+        gui_message_queue.put({'type': 'register_process', 'url': url, 'process': current_process, 'cancel_event': cancel_event})
+        
+        # Enhanced output processing
+        stdout_lines = []
+        error_lines = []
         while True:
             if cancel_event.is_set():
                 logger.info(f"Cancellation event set for {url}. Breaking download loop.")
                 break
-
+            
             stdout_line = current_process.stdout.readline()
             stderr_line = current_process.stderr.readline()
-
+            
             if not stdout_line and not stderr_line and current_process.poll() is not None:
                 break
             
-            if current_process.poll() is not None and (stdout_line or stderr_line):
-                pass
-            
-            if current_process.poll() is not None and current_process.returncode != 0:
-                stdout_output = "".join(stdout_lines) 
-                stderr_output = "".join(stderr_lines) 
-                if current_process.returncode == -15 or current_process.returncode == 1:
-                    logger.info(f"Process for {url} terminated by external signal (exit code: {current_process.returncode}).")
-                    break
-                else:
-                    raise Exception(f"Download process terminated unexpectedly with exit code {current_process.returncode}")
-
             if stdout_line:
                 stdout_lines.append(stdout_line)
                 if '[download]' in stdout_line and '%' in stdout_line:
@@ -645,47 +677,45 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
                         gui_message_queue.put({'type': 'update_download_status', 'url': url, 'status': 'Downloading', 'progress': progress})
                 elif '[ExtractAudio]' in stdout_line or '[ffmpeg]' in stdout_line:
                     gui_message_queue.put({'type': 'update_download_status', 'url': url, 'status': 'Processing'})
-                elif '[download] playlist:' in stdout_line:
-                    gui_message_queue.put({'type': 'update_download_status', 'url': url, 'status': 'Downloading Playlist'})
-
-            if stderr_line:
-                stderr_lines.append(stderr_line)
             
-            if not stdout_line and not stderr_line:
-                time.sleep(0.05)
+            if stderr_line:
+                error_lines.append(stderr_line)
+                logger.debug(f"yt-dlp stderr: {stderr_line.strip()}")
 
-        stdout_output = "".join(stdout_lines) 
-        stderr_output = "".join(stderr_lines) 
         return_code = current_process.poll()
-
-        if cancel_event.is_set() or (return_code is not None and return_code != 0 and (return_code == -15 or return_code == 1)):
-            gui_message_queue.put({'type': 'update_download_status', 'url': url, 'status': 'Cancelled', 'progress': '0%', 'message': 'Download cancelled by user.'})
-            return
-
-        if return_code != 0: 
-            error_detail = f"STDOUT: {stdout_output.strip()}\nSTDERR: {stderr_output.strip()}"
-            raise Exception(f"yt-dlp download failed (exit code {return_code}):\n{error_detail}")
         
-        final_downloaded_file_path = final_output_template
+        # Handle cancellation FIRST
+        if cancel_event.is_set():
+            gui_message_queue.put({'type': 'update_download_status', 'url': url, 'status': 'Cancelled', 'message': 'Download cancelled by user.'})
+            return  # Exit immediately after cancellation
+            
+        # Then handle process return codes
+        if return_code not in [0, -15]:  # -15 is SIGTERM on Unix
+            error_msg = '\n'.join(error_lines[-10:])
+            raise Exception(f"yt-dlp download failed (exit code {return_code}): {error_msg}")
         
-        if not os.path.exists(final_downloaded_file_path):
-            error_message = (
-                f"Final downloaded file not found at expected path: {final_downloaded_file_path}. "
-                f"STDOUT: {stdout_output.strip()}\nSTDERR: {stderr_output.strip()}"
-            )
-            raise Exception(error_message)
-
-        actual_filesize_bytes = os.path.getsize(final_downloaded_file_path)
-        actual_filename = os.path.basename(final_downloaded_file_path)
+        # --- FIX #3: Overhauled file verification logic ---
+        actual_filesize_bytes = 0
+        actual_filename = os.path.basename(final_output_path)  # Use the predicted name
+        final_path_for_gui = final_output_path  # The path to be sent to GUI
 
         if is_playlist:
-            detected_filetype = 'playlist'
-        elif media_type == 'video':
-            detected_filetype = 'video'
-        elif media_type == 'audio':
-            detected_filetype = 'audio'
-        else:
-            detected_filetype = 'unknown'
+            if os.path.isdir(final_output_path):
+                try:
+                    # Calculate total size of all files in the playlist directory
+                    actual_filesize_bytes = sum(os.path.getsize(os.path.join(dirpath, f)) for dirpath, _, filenames in os.walk(final_output_path) for f in filenames)
+                except Exception as e:
+                    logger.warning(f"Could not calculate total size of playlist directory {final_output_path}: {e}")
+                    actual_filesize_bytes = 0  # Report 0 if error
+            else:
+                raise Exception(f"Downloaded playlist directory not found at expected location: {final_output_path}")
+        else:  # single file
+            if os.path.exists(final_output_path):
+                actual_filesize_bytes = os.path.getsize(final_output_path)
+            else:
+                raise Exception(f"Downloaded file not found at expected location: {final_output_path}")
+
+        detected_filetype = 'playlist' if is_playlist else media_type
 
         gui_message_queue.put({
             'type': 'update_download_status', 
@@ -695,193 +725,503 @@ def _perform_yt_dlp_download(command_template, url, is_playlist, media_type, is_
             'filename': actual_filename, 
             'filesize_bytes': actual_filesize_bytes
         })
-            
         gui_message_queue.put({
             'type': 'add_completed', 
             'url': url, 
-            'filetype': detected_filetype,
+            'filetype': detected_filetype, 
             'filename': actual_filename, 
-            'is_playlist': is_playlist,
-            'path': final_downloaded_file_path,
-            'timestamp': time.time(),
+            'is_playlist': is_playlist, 
+            'path': final_path_for_gui,  # Use the corrected final path
+            'timestamp': time.time(), 
             'filesize_bytes': actual_filesize_bytes
         })
-
+    
     except Exception as e:
         error_message = str(e)
-        stderr_output = ""
-        if isinstance(e, subprocess.CalledProcessError):
-            stderr_output = e.stderr.lower()
-        elif 'stderr_output' in locals():
-            stderr_output = locals()['stderr_output'].lower()
-
-        if 'could not copy' in error_message.lower() or 'could not copy' in stderr_output:
-            user_message = "Cookie Error: Please close your Chrome browser completely and try again."
-            gui_message_queue.put({'type': 'update_download_status', 'url': url, 'status': 'Failed', 'message': user_message, 'filename': filename})
-            logger.error(f"Cookie database lock error during download for {url}. Instructing user to close browser.")
-        else:
-            gui_message_queue.put({'type': 'update_download_status', 'url': url, 'status': 'Failed', 'message': error_message, 'filename': filename})
-            logger.error(f"Error during download for {url}: {error_message}")
-
+        gui_message_queue.put({'type': 'update_download_status', 'url': url, 'status': 'Failed', 'message': error_message, 'filename': filename})
+        logger.error(f"Error during download for {url}: {error_message}")
+    
     finally:
-        if current_process and current_process.poll() is None:
+        # ONLY terminate if process is still running AND we're canceling
+        if current_process and current_process.poll() is None and cancel_event.is_set():
             try:
-                current_process.kill()
-                current_process.wait()
+                current_process.terminate()
+                current_process.wait(timeout=5)
             except Exception as e:
-                logger.error(f"Error ensuring process {url} is killed in finally block: {e}")
+                logger.error(f"Error terminating process: {e}")
+                
         gui_message_queue.put({'type': 'remove_process', 'url': url})
         
         if temp_cookie_file and os.path.exists(temp_cookie_file):
             try:
-                os.remove(temp_cookie_file)
-                logger.debug(f"Removed temporary cookie file: {temp_cookie_file}")
-            except OSError as e:
-                logger.error(f"Error removing temporary cookie file {temp_cookie_file}: {e}")
+                os.unlink(temp_cookie_file)
+            except Exception as e:
+                logger.error(f"Error removing temp cookie file: {e}")
 
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "healthy", "version": "2.1"})
 
-# --- Flask Routes for Conversion (Commented out for now) ---
-"""
-@flask_app.route('/convert', methods=['POST'])
-def convert_media_flask():
-    \"\"\"Converts a media file using FFmpeg.\"\"\"
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    # FIX #2: Gracefully handle missing shutdown function
+    func = request.environ.get('werkzeug.server.shutdown')
+    if func is None:
+        logger.warning("Shutdown command received, but not running with the Werkzeug Server. Cannot self-terminate.")
+        return jsonify({'status': 'error', 'message': 'Not running with the Werkzeug Server'}), 500
+    func()
+    return jsonify({'status': 'success', 'message': 'Server is shutting down.'})
+
+@app.route("/analyze_url", methods=["POST"])
+def analyze_url():
+    """Enhanced URL analysis with platform detection"""
     data = request.json
-    input_path = data.get('input_path')
-    output_format = data.get('output_format')
-    output_dir = data.get('output_dir')
-
-    target_video_codec = data.get('target_video_codec', 'copy') 
+    url = data.get("url")
+    if not url:
+        return jsonify({"error": "URL is required"}), 400
     
-    if not input_path or not output_format or not output_dir:
-        return jsonify({'status': 'error', 'message': 'Input path, output format, and output directory are required for conversion.'}), 400
-
-    if not os.path.exists(input_path):
-        return jsonify({'status': 'error', 'message': f"Input file not found: {input_path}"}), 404
+    platform = URLAnalyzer.detect_platform(url)
+    platform_config = URLAnalyzer.get_platform_config(url)
     
-    try:
-        full_output_dir = os.path.abspath(output_dir)
-        if not os.path.exists(full_output_dir):
-            os.makedirs(full_output_dir)
+    analysis = {
+        "platform": platform,
+        "is_temporary": URLAnalyzer.is_temporary_url(url),
+        "needs_cookies": URLAnalyzer.needs_cookies(url),
+        "required_headers": platform_config.get('required_headers', []),
+        "user_agent_type": platform_config.get('user_agent_type', 'chrome_windows'),
+        "suggestions": []
+    }
+    
+    if analysis["is_temporary"]:
+        analysis["suggestions"].append("This appears to be a temporary/CDN URL. Enhanced cookies and headers will be used.")
+    if analysis["needs_cookies"]:
+        analysis["suggestions"].append(f"This {platform} content requires authentication. Platform-specific cookies will be filtered and applied.")
+    if platform != 'generic':
+        analysis["suggestions"].append(f"Platform detected: {platform}. Using optimized extraction methods.")
+    
+    return jsonify(analysis)
 
-        base_name = os.path.splitext(os.path.basename(input_path))[0]
-        output_filename = f"{base_name}_converted.{output_format}"
-        full_output_path = os.path.join(full_output_dir, output_filename)
-
-        ffmpeg_command = [
-            FFMPEG_BIN,
-            '-i', input_path,
-            '-y',
-        ]
+@app.route("/get_formats", methods=["POST"])
+def get_formats():
+    """Enhanced format retrieval with smart fallbacks"""
+    data = request.json
+    url = data.get("url")
+    cookies = data.get("cookies")
+    if not url:
+        return jsonify({"error": "URL is required"}), 400
+    
+    platform = URLAnalyzer.detect_platform(url)
+    platform_config = URLAnalyzer.get_platform_config(url)
+    platform_config['platform'] = platform  # Add platform info for cookie filtering
+    
+    # Filter cookies if we have them
+    if cookies and URLAnalyzer.needs_cookies(url):
+        cookies = CookieManager.validate_cookies(cookies)
+        if platform != 'generic':
+            cookies = CookieManager.filter_essential_cookies(cookies, platform)
+        logger.info(f"Using {len(cookies)} filtered cookies for {platform}")
+    
+    # FIX #1 & #4: Removed unsupported/redundant flags from approaches
+    format_approaches = [
+        # Standard approach
+        ["--list-formats", "--ignore-errors", url],
+        # Last resort - try to get basic info
+        ["--dump-json", "--ignore-errors", url]
+    ]
+    
+    for approach_idx, args in enumerate(format_approaches):
+        logger.info(f"Trying format approach {approach_idx + 1}/{len(format_approaches)} for {platform}")
         
-        # Apply conversion codec logic here
-        if output_format in ['mp4', 'mkv', 'avi', 'mov', 'webm']: # Video formats
-            if target_video_codec == "copy":
-                ffmpeg_command.extend(["-c:v", "copy"])
-            elif target_video_codec == "h264":
-                ffmpeg_command.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "23"])
-            elif target_video_codec == "h265":
-                ffmpeg_command.extend(["-c:v", "libx265", "-preset", "medium", "-crf", "28"])
-            ffmpeg_command.extend(["-c:a", "aac"]) # Always convert audio to aac for video outputs
-        elif output_format in ['mp3', 'wav', 'flac', 'ogg']: # Audio formats
-            if output_format == 'mp3':
-                ffmpeg_command.extend(["-vn", "-ab", "192k"]) # No video, audio bitrate
-            elif output_format == 'wav':
-                ffmpeg_command.extend(["-vn", "-acodec", "pcm_s16le"]) # No video, PCM 16-bit little-endian
-            elif output_format == 'flac':
-                ffmpeg_command.extend(["-vn", "-acodec", "flac"]) # No video, FLAC
-            elif output_format == 'ogg':
-                ffmpeg_command.extend(["-vn", "-acodec", "libvorbis"]) # No video, Vorbis
-
-        ffmpeg_command.append(full_output_path)
-
-
-        gui_message_queue.put({ # Put message into global queue
-            'type': 'add_conversion',
-            'input_path': input_path,
-            'output_path': full_output_path,
-            'status': 'Converting',
-            'progress': '0%',
-            'filename': os.path.basename(input_path)
-        })
-
-        threading.Thread(target=_perform_ffmpeg_conversion, args=(ffmpeg_command, input_path)).start()
-
-        return jsonify({'status': 'success', 'message': f"Conversion initiated! Output will be at: {full_output_path}"})
-
-    except FileNotFoundError:
-        return jsonify({'status': 'error', 'message': f"FFmpeg binary not found at {FFMPEG_BIN}. Please ensure it's bundled correctly."}), 500
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-def _perform_ffmpeg_conversion(command, input_path):
-    \"\"\"Performs the FFmpeg conversion in a separate thread.\"\"\"
-    try:
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE, # Capture stdout for debugging on error
-            stderr=subprocess.PIPE, # Capture stderr for parsing
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
-            creationflags=SUBPROCESS_CREATION_FLAGS,
-            startupinfo=startupinfo
+        stdout, stderr = run_yt_dlp_command(
+            args, 
+            cookies if URLAnalyzer.needs_cookies(url) else None, 
+            timeout=60,  # Increased timeout
+            platform_config=platform_config
         )
         
-        filename = os.path.basename(input_path)
-        stdout_lines = []
-        stderr_lines = []
-
-        while True:
-            stdout_line = process.stdout.readline()
-            stderr_line = process.stderr.readline()
-
-            if not stdout_line and not stderr_line and process.poll() is not None:
-                break
-
-            if stdout_line:
-                stdout_lines.append(stdout_line)
-            
-            if stderr_line:
-                stderr_lines.append(stderr_line)
-                if 'time=' in stderr_line and 'speed=' in stderr_line:
-                    match = re.search(r'time=(\d{2}:\d{2}:\d{2}\.\d{2})', stderr_line)
-                    if match:
-                        progress_time = match.group(1)
-                        gui_message_queue.put({'type': 'update_conversion_status', 'input_path': input_path, 'status': 'Converting', 'progress': progress_time})
-
-        return_code = process.wait()
-        stdout_output = "".join(stdout_lines)
-        stderr_output = "".join(stderr_lines)
-
-        if return_code == 0:
-            gui_message_queue.put({'type': 'update_conversion_status', 'input_path': input_path, 'status': 'Completed', 'progress': '100%'})
+        if stdout:
+            # FIX #1: Adjusted index check after removing an approach
+            if approach_idx == 0:  # Standard format list approach
+                formats = stdout.strip().split('\n')
+                parsed_formats = parse_format_list(formats)
+                if parsed_formats:
+                    return jsonify({
+                        "formats": parsed_formats, 
+                        "used_cookies": bool(cookies),
+                        "platform": platform,
+                        "approach": f"method_{approach_idx + 1}"
+                    })
+            else:  # JSON dump approach
+                try:
+                    import json
+                    video_info = json.loads(stdout)
+                    formats = extract_formats_from_json(video_info)
+                    if formats:
+                        return jsonify({
+                            "formats": formats, 
+                            "used_cookies": bool(cookies),
+                            "platform": platform,
+                            "approach": "json_fallback"
+                        })
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse JSON output")
+    
+    # If all approaches failed, provide helpful error
+    error_msg = "Unable to retrieve formats."
+    if stderr:
+        stderr_lower = stderr.lower()
+        if "403" in stderr_lower or "forbidden" in stderr_lower:
+            error_msg = f"Access denied. This {platform} content may be private or require different authentication."
+        elif "private" in stderr_lower or "login" in stderr_lower:
+            error_msg = f"This {platform} content is private. Please ensure you're logged in to the correct account."
+        elif "not available" in stderr_lower:
+            error_msg = "This content is not available in your region or has been removed."
+        elif "unsupported" in stderr_lower:
+            error_msg = "This URL format is not supported."
+        elif "timeout" in stderr_lower:
+            error_msg = "Request timed out. The server may be overloaded."
         else:
-            error_detail = f"STDOUT: {stdout_output.strip()}\nSTDERR: {stderr_output.strip()}"
-            gui_message_queue.put({'type': 'update_conversion_status', 'input_path': input_path, 'status': 'Failed', 'message': f"FFmpeg error: {error_detail}"})
-            print(f"FFmpeg conversion failed for {input_path}:\n{error_detail}")
+            # Extract the actual error message
+            error_match = re.search(r'ERROR: (.+)', stderr)
+            if error_match:
+                error_msg = f"{platform.title()} error: {error_match.group(1)}"
+    
+    return jsonify({
+        "error": error_msg, 
+        "details": stderr,
+        "platform": platform,
+        "suggestions": get_error_suggestions(platform, stderr)
+    }), 500
 
+def parse_format_list(formats):
+    """Enhanced format parsing with better error handling"""
+    parsed_formats = []
+    header_found = False
+    
+    for line in formats:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Skip info lines
+        if line.startswith('[') or line.startswith('WARNING') or line.startswith('ERROR'):
+            continue
+            
+        # Find header
+        if 'ID' in line and ('ext' in line or 'resolution' in line):
+            header_found = True
+            continue
+            
+        if not header_found:
+            continue
+        
+        # Parse format line
+        try:
+            # Split by whitespace but be careful with the note field
+            parts = line.split()
+            if len(parts) >= 3:
+                format_info = {
+                    "id": parts[0],
+                    "ext": parts[1],
+                    "resolution": parts[2] if len(parts) > 2 else "unknown"
+                }
+                
+                # Handle the note field (everything after resolution)
+                if len(parts) > 3:
+                    note_parts = parts[3:]
+                    # Clean up common yt-dlp format descriptions
+                    note = ' '.join(note_parts)
+                    note = re.sub(r'\s+', ' ', note).strip()  # Normalize whitespace
+                    format_info["note"] = note[:100] + "..." if len(note) > 100 else note
+                else:
+                    format_info["note"] = ""
+                
+                # Enhanced type detection
+                resolution = format_info["resolution"].lower()
+                note = format_info.get("note", "").lower()
+                
+                if 'audio only' in resolution or 'audio only' in note:
+                    format_info["type"] = "audio"
+                elif any(vid_indicator in note for vid_indicator in ['video', 'mp4', 'webm', 'mkv']):
+                    format_info["type"] = "video"
+                elif resolution != "unknown" and resolution not in ['audio', 'none']:
+                    format_info["type"] = "video"
+                else:
+                    format_info["type"] = "audio" if format_info["ext"] in ['m4a', 'mp3', 'aac', 'opus'] else "video"
+                
+                # Add quality indicators
+                if 'best' in note:
+                    format_info["quality"] = "best"
+                elif 'worst' in note:
+                    format_info["quality"] = "worst"
+                else:
+                    format_info["quality"] = "standard"
+                
+                parsed_formats.append(format_info)
+                
+        except Exception as e:
+            logger.debug(f"Skipping unparseable format line: {line} - {e}")
+            continue
+    
+    # Sort formats by quality (best first)
+    parsed_formats.sort(key=lambda f: (
+        f["type"] == "video",  # Video formats first
+        f["quality"] == "best",  # Best quality first
+        f["resolution"] != "audio only",  # Non-audio formats first
+        f["id"]
+    ), reverse=True)
+    
+    return parsed_formats
+
+def extract_formats_from_json(video_info):
+    """Extract formats from JSON dump as fallback"""
+    formats = []
+    
+    try:
+        if 'formats' in video_info:
+            for fmt in video_info['formats']:
+                format_info = {
+                    "id": str(fmt.get('format_id', 'unknown')),
+                    "ext": fmt.get('ext', 'unknown'),
+                    "resolution": fmt.get('resolution', 'unknown'),
+                    "note": fmt.get('format_note', ''),
+                    "type": "video" if fmt.get('vcodec') != 'none' else "audio",
+                    "quality": "standard"
+                }
+                formats.append(format_info)
+        
+        # If no formats found, create basic ones
+        if not formats:
+            formats = [
+                {"id": "best", "ext": "mp4", "resolution": "best", "note": "Best available quality", "type": "video", "quality": "best"},
+                {"id": "worst", "ext": "mp4", "resolution": "worst", "note": "Lowest available quality", "type": "video", "quality": "worst"}
+            ]
+    
     except Exception as e:
-        gui_message_queue.put({'type': 'update_conversion_status', 'input_path': input_path, 'status': 'Error', 'message': str(e)})
-        print(f"Error during FFmpeg conversion for {input_path}: {e}")
-"""
+        logger.error(f"Error extracting formats from JSON: {e}")
+        return []
+    
+    return formats
+
+def get_error_suggestions(platform, stderr):
+    """Provide platform-specific error suggestions"""
+    suggestions = []
+    
+    if not stderr:
+        return suggestions
+    
+    stderr_lower = stderr.lower()
+    
+    if platform == 'facebook':
+        if '403' in stderr_lower or 'forbidden' in stderr_lower:
+            suggestions.extend([
+                "Try logging into Facebook in your browser first",
+                "Make sure the video privacy settings allow viewing",
+                "Check if the video is still available"
+            ])
+    elif platform == 'instagram':
+        if 'private' in stderr_lower or '403' in stderr_lower:
+            suggestions.extend([
+                "Ensure you're following this Instagram account",
+                "Try logging into Instagram in your browser",
+                "Check if the content is still available"
+            ])
+    elif platform == 'youtube':
+        if 'private' in stderr_lower:
+            suggestions.append("This YouTube video is private or unlisted")
+        elif 'copyright' in stderr_lower:
+            suggestions.append("This video may be blocked due to copyright restrictions")
+    elif platform == 'tiktok':
+        if '403' in stderr_lower:
+            suggestions.extend([
+                "Try accessing TikTok in your browser first",
+                "Some TikTok videos require account access"
+            ])
+    
+    # General suggestions
+    if 'timeout' in stderr_lower:
+        suggestions.append("Try again - the server may be temporarily overloaded")
+    elif 'network' in stderr_lower or 'connection' in stderr_lower:
+        suggestions.append("Check your internet connection")
+    
+    return suggestions
+
+@app.route("/download", methods=["POST"])
+def download():
+    """Enhanced download with platform-specific optimizations"""
+    data = request.json
+    url = data.get("url")
+    format_id = data.get("format_id")
+    media_type = data.get("media_type", "video")
+    cookies = data.get("cookies")
+    
+    if not url:
+        return jsonify({"error": "URL is required"}), 400
+    
+    # Get platform configuration
+    platform = URLAnalyzer.detect_platform(url)
+    platform_config = URLAnalyzer.get_platform_config(url)
+    platform_config['platform'] = platform
+    
+    # Process cookies with platform-specific filtering
+    cookie_string = None
+    if URLAnalyzer.needs_cookies(url) and cookies:
+        validated_cookies = CookieManager.validate_cookies(cookies)
+        if platform != 'generic':
+            validated_cookies = CookieManager.filter_essential_cookies(validated_cookies, platform)
+        cookie_string = CookieManager.convert_to_netscape(validated_cookies)
+        logger.info(f"Processed {len(validated_cookies)} cookies for {platform} download")
+    
+    # Build enhanced command template
+    command_template = [YT_DLP_BIN]
+    
+    # Add format selection with platform-specific optimizations
+    if format_id and format_id != "highest":
+        command_template.extend(["-f", format_id])
+    elif media_type == "video":
+        if platform == 'youtube':
+            # YouTube-specific format selection
+            command_template.extend(["-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best"])
+        elif platform in ['facebook', 'instagram']:
+            # Social media platforms often have simpler format structures
+            command_template.extend(["-f", "best[ext=mp4]/best"])
+        else:
+            # Generic best quality
+            command_template.extend(["-f", "bestvideo+bestaudio/best"])
+    elif media_type == "audio":
+        # Enhanced audio extraction
+        command_template.extend([
+            "-x", "--audio-format", "mp3", 
+            "--audio-quality", "0",  # Best quality
+            "--embed-metadata"  # Include metadata
+        ])
+    
+    # Add platform-specific arguments
+    if platform == 'youtube':
+        command_template.extend(["--write-description", "--write-info-json"])
+    elif platform in ['facebook', 'instagram']:
+        command_template.extend(["--no-check-certificate"])
+    
+    # Add progress and output options
+    command_template.extend([
+        "--newline", "--no-color", "--no-warnings",
+        "--socket-timeout", "60"
+    ])
+    
+    # Add URL
+    command_template.append(url)
+    
+    # Detect playlist
+    is_playlist = any(pattern in url.lower() for pattern in [
+        'playlist?list=', '/playlist/', '/sets/', '/collection/',
+        'album', 'playlist', 'list='
+    ])
+    
+    download_dir = settings.get('download_save_directory')
+    cancel_event = threading.Event()
+    
+    # Queue the download
+    gui_message_queue.put({
+        'type': 'add_download',
+        'url': url,
+        'status': 'Queued',
+        'filename': f'Preparing {platform} download...',
+        'timestamp': time.time(),
+        'cancel_event': cancel_event
+    })
+    
+    # Start enhanced download in background thread
+    threading.Thread(
+        target=_perform_yt_dlp_download,
+        args=(command_template, url, is_playlist, media_type, False, download_dir, cancel_event, cookie_string, platform_config),
+        daemon=True
+    ).start()
+    
+    return jsonify({
+        "message": f"Download started successfully for {platform} content!",
+        "platform": platform,
+        "url_analysis": {
+            "platform": platform,
+            "is_temporary": URLAnalyzer.is_temporary_url(url),
+            "needs_cookies": URLAnalyzer.needs_cookies(url),
+            "used_enhanced_cookies": bool(cookie_string)
+        }
+    })
 
 @app.route('/set_browser_monitor_status', methods=['POST'])
 def set_browser_monitor_status():
-    """Endpoint to enable/disable browser monitoring."""
-    global browser_monitor_enabled # Modify global variable in Flask's thread context
     data = request.json
     status = data.get('enabled')
-    print(f"DEBUG: Flask received browser monitor status update: {status}") # Debug print
     if isinstance(status, bool):
-        browser_monitor_enabled = status
-        print(f"DEBUG: Flask browser_monitor_enabled set to: {browser_monitor_enabled}") # Debug print
+        settings.set('browser_monitor_enabled', status)
         return jsonify({'status': 'success', 'message': f'Browser monitoring set to {status}'})
-    print(f"DEBUG: Flask received invalid status: {status}") # Debug print
     return jsonify({'status': 'error', 'message': 'Invalid status provided'}), 400
 
+def start_flask_server():
+    """Starts the Flask server."""
+    try:
+        app_wrapper = DispatcherMiddleware(app)
+        run_simple('127.0.0.1', FLASK_PORT, app_wrapper, use_reloader=False, use_debugger=False, threaded=True)
+    except Exception as e:
+        logger.critical(f"Failed to start Flask server: {e}")
+        gui_message_queue.put({'type': 'exit'})
 
-# --- PySide6 GUI Setup ---
+def wait_for_flask_server(max_retries=20, delay=0.2):
+    """Wait for Flask server to be ready by polling the health endpoint."""
+    for i in range(max_retries):
+        try:
+            response = requests.get(f"http://localhost:{FLASK_PORT}/health", timeout=0.5)
+            if response.status_code == 200 and response.json().get('status') == 'healthy':
+                logger.info(f"Flask server is ready after {i+1} retries.")
+                return True
+        except requests.exceptions.RequestException:
+            logger.debug(f"Attempt {i+1}/{max_retries}: Flask server not yet reachable.")
+        time.sleep(delay)
+    logger.error(f"Flask server did not become ready after {max_retries} retries.")
+    return False
 
+def format_bytes(bytes_val):
+    if bytes_val == 0: return "0 B"
+    units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+    i = 0
+    while bytes_val >= 1024 and i < len(units) - 1:
+        bytes_val /= 1024
+        i += 1
+    return f"{bytes_val:.2f} {units[i]}"
+
+# --- Merged GUI Code ---
+
+# gui.py
+
+import sys
+import os
+import threading
+import subprocess
+import shutil
+import queue
+import requests
+import time
+from datetime import datetime
+import logging
+
+# Import from server file
+
+# PySide6 imports
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QStackedWidget, QFrame, QFileDialog, QComboBox, 
+    QLineEdit, QRadioButton, QButtonGroup, QDialog, QStatusBar,
+    QTableView, QHeaderView, QAbstractItemView, QSplitter, QCheckBox
+)
+from PySide6.QtCore import (
+    Qt, QTimer, QUrl, Signal, QModelIndex, QRect, QSize, QPoint,  QEasingCurve, Property, QPropertyAnimation
+)
+from PySide6.QtGui import QColor, QFont, QDesktopServices, QIcon, QPixmap, QPalette, QPaintEvent, QPainter
+
+# Setup logger for the GUI
+logger = logging.getLogger(__name__)
+
+# --- Custom Widgets ---
 # Custom Button for Sidebar with Hover Effect
 class SidebarButton(QPushButton):
     def __init__(self, text, icon_svg=None, parent=None):
@@ -978,7 +1318,6 @@ ICONS = {
     "arrow-down": """<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-arrow-down"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>"""
 }
 
-
 # Custom QLineEdit with an integrated search icon
 class SearchLineEdit(QLineEdit):
     # Added main_window_instance parameter
@@ -1052,6 +1391,7 @@ class SearchLineEdit(QLineEdit):
         icon_x = self.width() - self.search_icon_button.width() - 5 # 5px from right edge
         icon_y = (self.height() - self.search_icon_button.height()) // 2 # Vertically center
         self.search_icon_button.move(icon_x, icon_y)
+
 
 
 # --- Custom Checkbox (from QCustomCheckBox.py) ---
@@ -1212,23 +1552,24 @@ class QCustomCheckBox(QCheckBox):
         thumb_size = self.height() - 6  # 3px padding on each side
         thumb_y = (track_height - thumb_size) / 2
 
+        # FIX #8: Cast float position to int for drawing
+        thumb_x = int(self.pos)
+
         if self.isChecked():
             # Checked state: active color for track, circle on the right
             painter.setBrush(self._activeColor)
             painter.drawRoundedRect(0, 0, track_width, track_height, track_radius, track_radius)
             painter.setBrush(self._circleColor)
-            painter.drawEllipse(self.pos, thumb_y, thumb_size, thumb_size)
+            painter.drawEllipse(thumb_x, thumb_y, thumb_size, thumb_size)
         else:
             # Unchecked state: background color for track, circle on the left
             painter.setBrush(self.bgColor)
             painter.drawRoundedRect(0, 0, track_width, track_height, track_radius, track_radius)
             painter.setBrush(self._circleColor)
-            painter.drawEllipse(self.pos, thumb_y, thumb_size, thumb_size)
+            painter.drawEllipse(thumb_x, thumb_y, thumb_size, thumb_size)
 
         painter.end()
 
-# Re-add QSvgRenderer import if it was removed, as SidebarButton uses it.
-from PySide6.QtSvg import QSvgRenderer 
 
 # New CustomHeaderView class to manage sort indicator as a QLabel
 class CustomHeaderView(QHeaderView):
@@ -1317,6 +1658,8 @@ class CustomHeaderView(QHeaderView):
         # Re-evaluate sort indicator position when model changes (e.g., when data is filtered)
         self._update_sort_indicator_position()
 
+
+from PySide6.QtCore import QAbstractTableModel
 
 
 class DownloadTableModel(QAbstractTableModel):
@@ -1448,6 +1791,202 @@ class DownloadTableModel(QAbstractTableModel):
     def getData(self):
         """Returns a copy of the current data."""
         return self._data[:] # Return a copy to prevent external modification
+
+# Dialog for adding a new download
+class AddDownloadDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add New Download")
+        self.setFixedSize(500, 250) 
+        self.setModal(True)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+        self.init_ui()
+        self.apply_dialog_style()
+
+    def apply_dialog_style(self):
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #2d2d2d;
+                border-radius: 10px;
+                border: 1px solid #495057;
+            }
+            QLabel {
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QLineEdit {
+                background-color: #3a3a3a;
+                border: 1px solid #495057;
+                border-radius: 5px;
+                padding: 5px;
+                color: #e0e0e0;
+            }
+            QLineEdit:focus {
+                border: 1px solid #4dabf7;
+            }
+            QRadioButton::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                border: 2px solid #495057;
+                background-color: #2d2d2d;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #4dabf7;
+                border: 2px solid #4dabf7;
+            }
+            QRadioButton {
+                color: #e0e0e0;
+            }
+            QPushButton {
+                background-color: #4dabf7;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 15px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #3b8fcc;
+            }
+            QPushButton#cancelButton {
+                background-color: #6c757d;
+            }
+            QPushButton#cancelButton:hover {
+                background-color: #5a6268;
+            }
+            QPushButton:focus {
+                outline: none;
+            }
+        """)
+
+    def init_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
+
+        # URL input
+        url_label = QLabel("Enter URL:")
+        main_layout.addWidget(url_label)
+        
+        self.url_entry = QLineEdit()
+        self.url_entry.setPlaceholderText("Video, Audio, or Playlist URL")
+        self.url_entry.setToolTip("Paste the URL of the video, audio, or playlist you want to download.")
+        main_layout.addWidget(self.url_entry)
+
+        url_help_label = QLabel("Example: https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        url_help_label.setStyleSheet("color: #adb5bd; font-size: 11px;")
+        main_layout.addWidget(url_help_label)
+        
+        # Media type selection
+        type_label = QLabel("Select Media Type:")
+        main_layout.addWidget(type_label)
+        
+        media_type_layout = QHBoxLayout()
+        self.media_type_group = QButtonGroup(self)
+        
+        self.radio_video = QRadioButton("Video")
+        self.radio_video.setChecked(True)
+        self.media_type_group.addButton(self.radio_video)
+        media_type_layout.addWidget(self.radio_video)
+        
+        self.radio_audio = QRadioButton("Audio")
+        self.media_type_group.addButton(self.radio_audio)
+        media_type_layout.addWidget(self.radio_audio)
+        
+        media_type_layout.addStretch(1)
+        main_layout.addLayout(media_type_layout)
+
+        # --- FIX: Add stretch to improve layout ---
+        main_layout.addStretch(1)
+
+        # Action buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        
+        self.ok_button = QPushButton("Start Download")
+        self.ok_button.setCursor(Qt.PointingHandCursor)
+        self.ok_button.clicked.connect(self.accept)
+        button_layout.addWidget(self.ok_button)
+        
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setObjectName("cancelButton")
+        self.cancel_button.setCursor(Qt.PointingHandCursor)
+        self.cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(self.cancel_button)
+        
+        main_layout.addLayout(button_layout)
+
+
+# Custom Confirmation Dialog (replaces QMessageBox)
+class ConfirmationDialog(QDialog):
+    def __init__(self, message, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Confirm Action")
+        self.setFixedSize(350, 150)
+        self.setModal(True)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        message_label = QLabel(message)
+        message_label.setAlignment(Qt.AlignCenter)
+        message_label.setWordWrap(True)
+        layout.addWidget(message_label)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+
+        self.yes_button = QPushButton("Yes")
+        self.yes_button.setFixedSize(80, 30)
+        self.yes_button.clicked.connect(self.accept)
+        button_layout.addWidget(self.yes_button)
+
+        self.no_button = QPushButton("No")
+        self.no_button.setObjectName("cancelButton") # Use same style as other cancel buttons
+        self.no_button.setFixedSize(80, 30)
+        self.no_button.clicked.connect(self.reject)
+        button_layout.addWidget(self.no_button)
+
+        layout.addLayout(button_layout)
+        self.apply_dialog_style()
+
+    def apply_dialog_style(self):
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #2d2d2d;
+                border-radius: 10px;
+                border: 1px solid #495057;
+            }
+            QLabel {
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QPushButton {
+                background-color: #4dabf7;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 15px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #3b8fcc;
+            }
+            QPushButton#cancelButton {
+                background-color: #6c757d;
+            }
+            QPushButton#cancelButton:hover {
+                background-color: #5a6268;
+            }
+            QPushButton:focus {
+                outline: none;
+            }
+        """)
+
 
 # Main Application Window
 class MainWindow(QMainWindow):
@@ -2870,7 +3409,7 @@ class MainWindow(QMainWindow):
             self.show_status("Cancellation aborted.", "info")
 
     def refresh_current_view(self):
-        self.filter_current_view(self.search_input.text())
+        self.filter_displayed_items(self.search_input.text())
         self.show_status("View refreshed.", "info")
 
 
@@ -3295,202 +3834,6 @@ class MainWindow(QMainWindow):
     #     QApplication.processEvents()
 
 
-# Dialog for adding a new download
-class AddDownloadDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Add New Download")
-        self.setFixedSize(500, 250) 
-        self.setModal(True)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-
-        self.init_ui()
-        self.apply_dialog_style()
-
-    def apply_dialog_style(self):
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #2d2d2d;
-                border-radius: 10px;
-                border: 1px solid #495057;
-            }
-            QLabel {
-                color: #e0e0e0;
-                font-size: 13px;
-            }
-            QLineEdit {
-                background-color: #3a3a3a;
-                border: 1px solid #495057;
-                border-radius: 5px;
-                padding: 5px;
-                color: #e0e0e0;
-            }
-            QLineEdit:focus {
-                border: 1px solid #4dabf7;
-            }
-            QRadioButton::indicator {
-                width: 16px;
-                height: 16px;
-                border-radius: 8px;
-                border: 2px solid #495057;
-                background-color: #2d2d2d;
-            }
-            QRadioButton::indicator:checked {
-                background-color: #4dabf7;
-                border: 2px solid #4dabf7;
-            }
-            QRadioButton {
-                color: #e0e0e0;
-            }
-            QPushButton {
-                background-color: #4dabf7;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 8px 15px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #3b8fcc;
-            }
-            QPushButton#cancelButton {
-                background-color: #6c757d;
-            }
-            QPushButton#cancelButton:hover {
-                background-color: #5a6268;
-            }
-            QPushButton:focus {
-                outline: none;
-            }
-        """)
-
-    def init_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
-
-        # URL input
-        url_label = QLabel("Enter URL:")
-        main_layout.addWidget(url_label)
-        
-        self.url_entry = QLineEdit()
-        self.url_entry.setPlaceholderText("Video, Audio, or Playlist URL")
-        self.url_entry.setToolTip("Paste the URL of the video, audio, or playlist you want to download.")
-        main_layout.addWidget(self.url_entry)
-
-        url_help_label = QLabel("Example: https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-        url_help_label.setStyleSheet("color: #adb5bd; font-size: 11px;")
-        main_layout.addWidget(url_help_label)
-        
-        # Media type selection
-        type_label = QLabel("Select Media Type:")
-        main_layout.addWidget(type_label)
-        
-        media_type_layout = QHBoxLayout()
-        self.media_type_group = QButtonGroup(self)
-        
-        self.radio_video = QRadioButton("Video")
-        self.radio_video.setChecked(True)
-        self.media_type_group.addButton(self.radio_video)
-        media_type_layout.addWidget(self.radio_video)
-        
-        self.radio_audio = QRadioButton("Audio")
-        self.media_type_group.addButton(self.radio_audio)
-        media_type_layout.addWidget(self.radio_audio)
-        
-        media_type_layout.addStretch(1)
-        main_layout.addLayout(media_type_layout)
-
-        # --- FIX: Add stretch to improve layout ---
-        main_layout.addStretch(1)
-
-        # Action buttons
-        button_layout = QHBoxLayout()
-        button_layout.addStretch(1)
-        
-        self.ok_button = QPushButton("Start Download")
-        self.ok_button.setCursor(Qt.PointingHandCursor)
-        self.ok_button.clicked.connect(self.accept)
-        button_layout.addWidget(self.ok_button)
-        
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setObjectName("cancelButton")
-        self.cancel_button.setCursor(Qt.PointingHandCursor)
-        self.cancel_button.clicked.connect(self.reject)
-        button_layout.addWidget(self.cancel_button)
-        
-        main_layout.addLayout(button_layout)
-
-# Custom Confirmation Dialog (replaces QMessageBox)
-class ConfirmationDialog(QDialog):
-    def __init__(self, message, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Confirm Action")
-        self.setFixedSize(350, 150)
-        self.setModal(True)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
-
-        message_label = QLabel(message)
-        message_label.setAlignment(Qt.AlignCenter)
-        message_label.setWordWrap(True)
-        layout.addWidget(message_label)
-
-        button_layout = QHBoxLayout()
-        button_layout.addStretch(1)
-
-        self.yes_button = QPushButton("Yes")
-        self.yes_button.setFixedSize(80, 30)
-        self.yes_button.clicked.connect(self.accept)
-        button_layout.addWidget(self.yes_button)
-
-        self.no_button = QPushButton("No")
-        self.no_button.setObjectName("cancelButton") # Use same style as other cancel buttons
-        self.no_button.setFixedSize(80, 30)
-        self.no_button.clicked.connect(self.reject)
-        button_layout.addWidget(self.no_button)
-
-        layout.addLayout(button_layout)
-        self.apply_dialog_style()
-
-    def apply_dialog_style(self):
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #2d2d2d;
-                border-radius: 10px;
-                border: 1px solid #495057;
-            }
-            QLabel {
-                color: #e0e0e0;
-                font-size: 13px;
-            }
-            QPushButton {
-                background-color: #4dabf7;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 8px 15px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #3b8fcc;
-            }
-            QPushButton#cancelButton {
-                background-color: #6c757d;
-            }
-            QPushButton#cancelButton:hover {
-                background-color: #5a6268;
-            }
-            QPushButton:focus {
-                outline: none;
-            }
-        """)
-
-
-# --- Main Application Logic ---
 
 if __name__ == "__main__":
     # Start the Flask server in a background thread
